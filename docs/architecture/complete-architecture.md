@@ -842,8 +842,8 @@ Results are buffered and flushed in batches. 1 million prompts produce ~2000 GCS
 **At-least-once over at-most-once.**
 On recovery, prompts near the checkpoint boundary may be reprocessed. This is preferred over silently dropping prompts.
 
-**api_key stored directly in Firestore.**
-No Secret Manager. The provider api_key is stored in the Firestore job record. The api_key_hash (SHA-256) serves as the client identifier and GCS path namespace.
+**API key management via Unkey.**
+Client API keys are issued and validated through Unkey — not stored or hashed manually. Unkey handles generation, hashing, revocation, and per-key rate limiting. The `client_id` comes from Unkey key metadata and is used as the GCS path namespace and Firestore job owner. The provider LLM api_key (submitted per job) is stored in the Firestore job record only — never logged or exported.
 
 **Sequential job execution per client.**
 Jobs from the same api_key_hash run one at a time. The Job Launcher checks for active jobs before creating a pod. The Execution Pod triggers the next queued job on completion.
@@ -1011,13 +1011,14 @@ Log events emitted by the Execution Pod:
 
 ---
 
-### Backend Options
+### Backend
 
 The OTel SDK is configured once. The export destination is an environment variable.
 
-| Backend | Traces | Logs | Metrics | Notes |
-|---|---|---|---|---|
-| GCP Native | Cloud Trace | Cloud Logging | Cloud Monitoring | Zero infra, native GCP integration |
-| Grafana Stack | Tempo | Loki | Mimir | Richer dashboards, self-hosted on GKE |
+| Tool | Role | Notes |
+|---|---|---|
+| **Axiom** | Logs + Traces + Metrics | OTel-native SaaS. One env var to connect. Free tier covers early stage. No infrastructure to run. |
+| **Sentry** | Error tracking | Captures unhandled exceptions across all services with full stack traces. 3 lines to integrate. |
+| **Better Stack** | Uptime + alerting | External endpoint monitoring. Pages on downtime. Public status page for users. |
 
-Both backends receive identical data. Switching requires only changing the OTel exporter endpoint.
+Switching Axiom to any other OTel-compatible backend requires only changing `OTEL_EXPORTER_OTLP_ENDPOINT`. No application code changes.

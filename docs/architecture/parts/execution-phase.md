@@ -1,22 +1,22 @@
-# PromptForge Scheduler Architecture (Execution Phase)
+# PromptForge Execution Pod Architecture (Execution Phase)
 
 # Overview
 
-Once a job reaches `QUEUED`, a dedicated scheduler pod is assigned to that job.
+Once a job reaches `QUEUED`, a dedicated execution pod is assigned to that job.
 
-The scheduler is responsible for:
+The execution pod is responsible for:
 
 * Reading prompts from GCS
 * Learning RPM limits
 * Learning TPM limits
-* Dispatching requests
+* Dispatching requests via LiteLLM
 * Tracking retries
 * Collecting responses
 * Buffering results in memory
 * Persisting checkpoints
 * Recovering from failures
 
-The scheduler is the active execution engine.
+The execution pod is the active execution engine.
 
 Firestore is no longer involved except for job lifecycle state.
 
@@ -24,23 +24,26 @@ Firestore is no longer involved except for job lifecycle state.
 
 # Initial State
 
-The scheduler receives:
+The execution pod receives via env vars:
 
 ```json
 {
   "job_id": "job_123",
+  "client_id": "abc123",
   "provider": "openai",
   "model": "gpt-4o",
 
   "rpm_limit": 500,
   "tpm_limit": 100000,
 
-  "prompts_path":
-    "jobs/job_123/prompts.jsonl"
+  "prompts_path": "{client_id}/job_123/prompts.jsonl",
+  "prompt_count": 94500
 }
 ```
 
-Scheduler creates:
+Provider `api_key` is read from Firestore `/jobs/{job_id}` at startup — not from env vars.
+
+Execution pod initializes:
 
 ```python
 offset = 0
@@ -52,9 +55,11 @@ running = 0
 retry_queue = []
 
 result_buffer = []
+error_buffer  = []
+token_history = []
 
 rpm_target = 10
-tpm_target = 250
+tpm_target = TPM_LIMIT   # from env var
 
 p95_tokens = 1000
 
@@ -87,9 +92,9 @@ This is important for recovery.
 
 ---
 
-# Scheduler Components
+# Execution Pod Components
 
-The scheduler internally consists of four loops.
+The execution pod internally consists of four loops.
 
 ```text
 ┌─────────────────────┐
@@ -159,7 +164,7 @@ because TPM becomes the bottleneck.
 
 ## Request Spacing
 
-Scheduler does NOT send:
+The execution pod does NOT send:
 
 ```text
 100 requests
@@ -207,7 +212,7 @@ Retry queue always has priority.
 
 ## Reading From GCS
 
-The scheduler never downloads the full file.
+The execution pod never downloads the full file.
 
 Instead:
 
@@ -252,11 +257,15 @@ Prompt:
 }
 ```
 
-is converted into:
+is dispatched via LiteLLM:
 
 ```python
 asyncio.create_task(
-    call_llm(prompt)
+    litellm.acompletion(
+        model=f"{provider}/{model}",
+        messages=[{"role": "user", "content": prompt.text}],
+        api_key=api_key
+    )
 )
 ```
 
@@ -266,7 +275,7 @@ Update:
 running += 1
 ```
 
-The request now leaves the scheduler.
+The request now leaves the execution pod through LiteLLM to the provider.
 
 ---
 
@@ -304,7 +313,7 @@ Response contains:
 }
 ```
 
-Scheduler updates:
+Execution pod updates:
 
 ```python
 running -= 1
@@ -343,7 +352,7 @@ token_history.append(800)
 
 # P95 Calculation
 
-Scheduler maintains rolling:
+Execution pod maintains rolling:
 
 ```python
 p95_tokens
@@ -691,7 +700,7 @@ Then:
 125 requests/min
 ```
 
-The scheduler automatically reduces dispatch speed if TPM becomes the bottleneck.
+The execution pod automatically reduces dispatch speed if TPM becomes the bottleneck.
 
 No provider-specific logic required.
 
@@ -758,7 +767,7 @@ When Kubernetes sends:
 SIGTERM
 ```
 
-Scheduler:
+Execution pod:
 
 ```python
 dispatch_enabled = False
@@ -772,9 +781,9 @@ No complex flush required.
 
 # Recovery
 
-If scheduler dies:
+If the execution pod dies:
 
-New scheduler loads:
+New execution pod loads:
 
 ```text
 state.json
@@ -843,19 +852,16 @@ status=COMPLETED
 # Final Storage Layout
 
 ```text
-jobs/job_123/
+gs://promptforge-input/{client_id}/job_123/
+└── prompts.jsonl          ← deleted by pod on completion
 
-├── prompts.jsonl
-
-├── state.json
-
+gs://promptforge-output/{client_id}/job_123/
+├── state.json             ← final checkpoint
 ├── results_part_001.jsonl
 ├── results_part_002.jsonl
 ├── results_part_003.jsonl
-
 ├── results_final.jsonl
-
 └── errors.jsonl
 ```
 
-The final architecture keeps execution state in scheduler memory, persists only periodic checkpoints, streams prompts from GCS, buffers responses before writing, dynamically learns RPM and TPM limits, and scales to millions of prompts with minimal database and storage operations.
+The final architecture keeps execution state in pod memory, persists only periodic checkpoints, streams prompts from GCS, dispatches through LiteLLM for provider abstraction, buffers responses before writing, dynamically learns RPM and TPM limits, and scales to millions of prompts with minimal database and storage operations.

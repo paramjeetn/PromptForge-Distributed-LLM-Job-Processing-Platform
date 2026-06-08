@@ -1,7 +1,7 @@
 # PromptForge — System Specification
 
-Version: 1.0  
-Status: Draft  
+Version: 2.0
+Status: Current
 Platform: Google Cloud
 
 ---
@@ -9,30 +9,33 @@ Platform: Google Cloud
 ## 1. API Specification
 
 ### Base URL
+
 ```
 https://api.promptforge.io/v1
 ```
 
 ### Authentication
-All requests require the client's API key in the header:
+
+All requests require a client API key in the header:
+
 ```
 X-API-Key: {api_key}
 ```
 
-The API layer hashes this key to derive `client_id`. The raw key is never stored.
+Keys are issued and validated through **Unkey**. The raw key is never stored anywhere in PromptForge infrastructure. On every request, the API layer calls `unkey.keys.verify(key)` — a valid response returns the associated `client_id` from Unkey metadata. An invalid or revoked key returns `401` immediately.
 
 ---
 
-### POST /jobs
+### POST /v1/jobs/init
 
-Submit a new job.
+Initialize a new job. Returns a signed GCS URL for the client to upload their prompts file directly.
 
 **Request body:**
+
 ```json
 {
-  "provider": "openai | gemini | anthropic",
+  "provider": "openai | anthropic | gemini | mistral",
   "model": "string",
-  "prompts": ["string", "..."],
   "max_retries": 3,
   "rpm": null,
   "tpm": null
@@ -41,53 +44,65 @@ Submit a new job.
 
 | Field | Required | Description |
 |---|---|---|
-| `provider` | Yes | LLM provider |
-| `model` | Yes | Model identifier (e.g. `gpt-4o`, `gemini-1.5-flash`) |
-| `prompts` | Yes | Array of prompt strings, any length |
-| `max_retries` | No | Default 3. Per-prompt retry limit for transient errors |
-| `rpm` | No | Client-supplied RPM cap. Effective = min(provider_default, this) |
-| `tpm` | No | Client-supplied TPM cap. Effective = min(provider_default, this) |
+| `provider` | Yes | LLM provider. Routed via LiteLLM — adding new providers requires no code change. |
+| `model` | Yes | Provider model identifier (e.g. `gpt-4o`, `claude-opus-4-6`, `gemini-2.5-pro`) |
+| `max_retries` | No | Per-prompt retry limit for transient errors. Default: 3 |
+| `rpm` | No | Client RPM cap. Used as upper bound by the rate learning engine. |
+| `tpm` | No | Client TPM cap. Used as upper bound by the rate learning engine. |
 
 **Response 202 Accepted:**
+
 ```json
 {
   "job_id": "uuid",
-  "status": "queued",
-  "total_prompts": 1000,
-  "created_at": "ISO8601"
+  "upload_url": "https://storage.googleapis.com/...",
+  "expires_at": "ISO8601"
 }
 ```
+
+The client uploads `prompts.jsonl` directly to `upload_url` via HTTP PUT. PromptForge never proxies the file.
 
 **Error responses:**
 
 | Code | Reason |
 |---|---|
-| `400` | Invalid payload, missing required fields |
-| `401` | Invalid or missing API key |
+| `400` | Invalid payload or missing required fields |
+| `401` | Invalid or revoked API key |
 | `422` | Unsupported provider or model |
 
 ---
 
-### GET /jobs/{job_id}
+### GET /v1/jobs/{job_id}
 
-Get current job status and progress.
+Get current job status and progress counters.
 
 **Response 200 OK:**
+
 ```json
 {
   "job_id": "uuid",
-  "status": "queued | running | completed | failed | cancelled",
+  "status": "AWAITING_UPLOAD | QUEUED | PENDING | PROCESSING | COMPLETED | FAILED | CANCELLED",
   "total": 1000,
-  "pending": 400,
-  "running": 50,
   "completed": 530,
   "failed": 20,
   "progress_pct": 55.0,
   "created_at": "ISO8601",
-  "started_at": "ISO8601",
-  "estimated_completion": "ISO8601"
+  "started_processing_at": "ISO8601",
+  "completed_at": "ISO8601"
 }
 ```
+
+**Status values:**
+
+| Status | Meaning |
+|---|---|
+| `AWAITING_UPLOAD` | Job record created. Waiting for client to upload prompts.jsonl. |
+| `QUEUED` | File uploaded and validated. Pod creation in progress or pod starting. |
+| `PENDING` | Another job for same client is already running. This job is queued behind it. |
+| `PROCESSING` | Execution pod is running. Prompts being dispatched. |
+| `COMPLETED` | All prompts processed. Results available for download. |
+| `FAILED` | File was invalid (not parseable JSONL) or a fatal system error occurred. |
+| `CANCELLED` | Client cancelled the job. |
 
 **Error responses:**
 
@@ -98,374 +113,255 @@ Get current job status and progress.
 
 ---
 
-### DELETE /jobs/{job_id}
+### GET /v1/jobs/{job_id}/results
 
-Cancel a running job.
+Get signed download URLs for completed result files.
+
+Only available when `status = COMPLETED`. Returns `409` if the job is still running or has not started.
 
 **Response 200 OK:**
+
 ```json
 {
   "job_id": "uuid",
-  "status": "cancelled"
+  "result_urls": [
+    "https://signed-gcs-url/results_part_001.jsonl",
+    "https://signed-gcs-url/results_part_002.jsonl",
+    "https://signed-gcs-url/results_final.jsonl"
+  ],
+  "error_urls": [
+    "https://signed-gcs-url/errors.jsonl"
+  ],
+  "expires_at": "ISO8601"
 }
 ```
 
-Prompts already delivered to workers finish naturally. Pending prompts are abandoned. Cloud Tasks queue for this client is purged of this job's tasks.
+Signed URLs expire after 1 hour. Each URL points to one JSONL part file. Clients merge all `result_urls` files to reconstruct the complete result set. `error_urls` contains prompts that exhausted all retries.
 
 **Error responses:**
 
 | Code | Reason |
 |---|---|
-| `404` | Job not found |
-| `409` | Job already completed or cancelled |
+| `401` | Invalid API key |
+| `404` | Job not found or does not belong to this client |
+| `409` | Job not yet completed |
 
 ---
 
-### GET /jobs/{job_id}/results
+### DELETE /v1/jobs/{job_id}
 
-Get signed download URLs for completed results.
+Cancel a running or queued job.
+
+The execution pod detects cancellation on the next dispatch loop iteration and stops sending new prompts. Prompts already in-flight complete naturally. The pod then exits.
 
 **Response 200 OK:**
+
 ```json
 {
   "job_id": "uuid",
-  "status": "completed",
-  "result_urls": ["https://signed-gcs-url", "..."],
-  "error_urls": ["https://signed-gcs-url", "..."],
-  "expires_at": "ISO8601"
+  "status": "CANCELLED"
 }
 ```
 
-URLs are time-limited signed GCS URLs (default expiry: 1 hour). Each URL points to one JSONL part file. Clients merge part files to reconstruct the full result set.
+**Error responses:**
 
-Only available when job status = completed. Returns 409 if job is still running.
+| Code | Reason |
+|---|---|
+| `401` | Invalid API key |
+| `404` | Job not found or does not belong to this client |
+| `409` | Job already completed or already cancelled |
 
 ---
 
-## 2. Data Specification
+## 2. Prompt File Format
 
-### Firestore Collections
+Clients upload a JSONL file where every line is a valid JSON object with at minimum:
 
-#### jobs/{job_id}
+```json
+{"prompt_id": 1, "prompt": "What is the capital of France?"}
+{"prompt_id": 2, "prompt": "Summarise the following text: ..."}
+{"prompt_id": 3, "prompt": "..."}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `prompt_id` | integer | Yes | Unique integer ID. Must be sequential from 1 to N. Used for recovery, deduplication, and reconciliation. |
+| `prompt` | string | Yes | Prompt text sent to the LLM. |
+
+Additional fields are ignored. Lines that fail validation are written to `errors.jsonl` at upload time with the reason. The job is not aborted due to invalid lines — only completely non-JSONL files result in `FAILED`.
+
+---
+
+## 3. Result File Format
+
+**results_part_NNN.jsonl / results_final.jsonl:**
+
+```json
+{"prompt_id": 1, "response": "Paris", "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+{"prompt_id": 2, "response": "...", "prompt_tokens": 340, "completion_tokens": 210, "total_tokens": 550}
+```
+
+**errors.jsonl:**
+
+```json
+{"prompt_id": 47, "prompt": "...", "attempts": 3, "last_error_code": 429, "last_error_message": "Rate limit exceeded", "failed_at": "ISO8601"}
+{"prompt_id": 91, "prompt": "...", "attempts": 3, "last_error_code": 503, "last_error_message": "Service unavailable", "failed_at": "ISO8601"}
+```
+
+Validation errors written at upload time (before execution):
+
+```json
+{"prompt_id": null, "line": 42, "raw": "...", "error": "field 'prompt' missing", "stage": "validation"}
+```
+
+---
+
+## 4. Firestore Schema
+
+### jobs/{job_id}
 
 | Field | Type | Description |
 |---|---|---|
 | `job_id` | string | UUID, immutable |
-| `client_id` | string | SHA-256 hash of API key |
-| `provider` | string | openai / gemini / anthropic |
+| `client_id` | string | From Unkey key metadata. Used as GCS path namespace and job owner. |
+| `provider` | string | LLM provider |
 | `model` | string | Model identifier |
-| `status` | string | QUEUED / RUNNING / COMPLETED / FAILED / CANCELLED |
-| `total` | int | Total prompt count |
-| `pending` | int | Prompts awaiting dispatch |
-| `running` | int | Prompts currently with a worker |
-| `completed` | int | Successfully completed prompts |
-| `failed` | int | Permanently failed prompts |
+| `api_key` | string | Provider LLM API key submitted by client. Stored here only — never logged or exported. |
+| `status` | string | AWAITING_UPLOAD / QUEUED / PENDING / PROCESSING / COMPLETED / FAILED / CANCELLED |
+| `rpm` | int | Client-supplied RPM upper bound (nullable) |
+| `tpm` | int | Client-supplied TPM upper bound (nullable) |
 | `max_retries` | int | Per-prompt retry limit |
+| `upload_path` | string | GCS path of prompts.jsonl |
+| `prompt_count` | int | Valid prompt count (set after upload validation) |
+| `invalid_count` | int | Invalid lines found during upload validation |
+| `file_size_bytes` | int | File size (set after upload) |
 | `created_at` | timestamp | |
-| `started_at` | timestamp | When first prompt was dispatched |
-| `completed_at` | timestamp | When last prompt reached terminal state |
+| `uploaded_at` | timestamp | When GCS OBJECT_FINALIZE fired |
+| `queued_at` | timestamp | When pod creation was triggered |
+| `started_processing_at` | timestamp | When execution pod began dispatching |
+| `completed_at` | timestamp | When job reached terminal state |
+
+No prompt text is stored in Firestore. No per-prompt records. No quota collection. All rate learning state lives in execution pod memory.
 
 ---
 
-#### prompts/{job_id}/{prompt_id}
+## 5. GCS Layout
 
-| Field | Type | Description |
-|---|---|---|
-| `prompt_id` | string | UUID, immutable |
-| `job_id` | string | Parent job reference |
-| `client_id` | string | |
-| `prompt_text` | string | Original prompt content |
-| `status` | string | PENDING / RUNNING / COMPLETED / FAILED |
-| `retry_count` | int | Incremented on transient errors only |
-| `running_since` | timestamp | Set when moved to RUNNING, used by stale sweep |
-| `estimated_tokens` | int | Pre-dispatch estimate (input + P95 output) |
-| `actual_input_tokens` | int | From provider response metadata |
-| `actual_output_tokens` | int | From provider response metadata |
-| `error_message` | string | Set on FAILED prompts |
-| `completed_at` | timestamp | |
+```
+gs://promptforge-input/
+  {client_id}/{job_id}/prompts.jsonl       ← uploaded by client, deleted on completion
+
+gs://promptforge-output/
+  {client_id}/{job_id}/state.json          ← execution checkpoint (overwritten every 30s)
+  {client_id}/{job_id}/results_part_001.jsonl
+  {client_id}/{job_id}/results_part_002.jsonl
+  {client_id}/{job_id}/...
+  {client_id}/{job_id}/results_final.jsonl
+  {client_id}/{job_id}/errors.jsonl
+```
+
+Eventarc watches `promptforge-input` only. No Eventarc on the output bucket.
 
 ---
 
-#### quota/{client_id}
-
-| Field | Type | Description |
-|---|---|---|
-| `client_id` | string | |
-| `provider` | string | |
-| `model` | string | |
-| `rpm_limit` | int | Effective RPM ceiling |
-| `tpm_limit` | int | Effective TPM ceiling |
-| `rpm_used` | int | Requests dispatched in current window |
-| `tpm_used` | int | Tokens consumed in current window |
-| `window_start` | timestamp | Start of current 60s window |
-| `p95_output_tokens` | int | Rolling P95 estimate of output tokens |
-| `p95_sample_count` | int | Number of completions contributing to P95 |
-| `cooldown_until` | timestamp | No dispatches before this time |
-| `last_429_at` | timestamp | Most recent rate limit error |
-
----
-
-#### model_defaults/{provider}/{model}
-
-| Field | Type | Description |
-|---|---|---|
-| `tier1_rpm` | int | Provider's published tier-1 RPM limit |
-| `tier1_tpm` | int | Provider's published tier-1 TPM limit |
-| `p95_seed_tokens` | int | Cold-start P95 estimate before any history exists |
-
----
-
-### GCS Layout
+## 6. Job Status Machine
 
 ```
-gs://{bucket}/
-  jobs/{client_id}/{job_id}/request.json
-  results/{job_id}/part_{prompt_id}.jsonl
-  errors/{job_id}/error_{prompt_id}.json
+AWAITING_UPLOAD
+      ↓  (OBJECT_FINALIZE received, file valid)
+   QUEUED  ←──────────────────────────────────────────────┐
+      ↓  (no other job running for same client)            │
+  PROCESSING                                               │
+      ↓  (offset==EOF, running==0, retry_queue==[])        │
+  COMPLETED ──→ triggers next PENDING job for same client ─┘
+
+AWAITING_UPLOAD
+      ↓  (OBJECT_FINALIZE received, another job active)
+   PENDING
+      ↓  (previous job completes)
+   QUEUED  → PROCESSING → COMPLETED
+
+AWAITING_UPLOAD / QUEUED / PROCESSING
+      ↓  (client calls DELETE)
+  CANCELLED
+
+QUEUED
+      ↓  (file completely invalid — not parseable as JSONL)
+   FAILED
 ```
-
-**Result record schema (JSONL):**
-```json
-{
-  "prompt_id": "uuid",
-  "job_id": "uuid",
-  "prompt_text": "string",
-  "response_text": "string",
-  "model": "string",
-  "provider": "string",
-  "actual_input_tokens": 120,
-  "actual_output_tokens": 340,
-  "latency_ms": 1840,
-  "completed_at": "ISO8601"
-}
-```
-
-**Error record schema (JSON):**
-```json
-{
-  "prompt_id": "uuid",
-  "job_id": "uuid",
-  "prompt_text": "string",
-  "error_code": "string",
-  "error_message": "string",
-  "retry_count": 3,
-  "last_attempted_at": "ISO8601"
-}
-```
-
----
-
-## 3. Prompt State Machine
-
-```
-PENDING → RUNNING → COMPLETED
-               ↓
-            PENDING  (429 or transient error, retries remain)
-               ↓
-            FAILED   (terminal error or retries exhausted)
-```
-
-| Transition | Trigger | retry_count |
-|---|---|---|
-| PENDING → RUNNING | Scheduler dispatch | unchanged |
-| RUNNING → COMPLETED | Worker: LLM success | unchanged |
-| RUNNING → PENDING | Worker: 429 received | unchanged |
-| RUNNING → PENDING | Worker: transient error, retries remain | +1 |
-| RUNNING → PENDING | Stale sweep: running_since > 120s | unchanged |
-| RUNNING → FAILED | Worker: terminal error (4xx != 429) | unchanged |
-| RUNNING → FAILED | Worker: transient error, retries exhausted | +1 |
-
----
-
-## 4. Scheduler Specification
-
-**Runtime:** Single GKE pod, always-on.
-**Concurrency:** One async dispatch loop coroutine per active client.
-**Recovery:** On pod restart, queries Firestore for clients with pending > 0 and resumes their loops.
-
-### Dispatch Loop (per client, per iteration)
-
-```
-1. Cancellation check
-   For each job: if status = CANCELLED, skip its pending prompts
-
-2. Stale recovery
-   Query: status = RUNNING AND running_since < now - 120s
-   Action: reset to PENDING (retry_count unchanged)
-
-3. Cooldown check
-   If now < quota.cooldown_until → sleep until expiry, restart iteration
-
-4. Window reset
-   If now - quota.window_start > 60s → reset rpm_used = 0, tpm_used = 0
-
-5. Quota calculation
-   available_rpm = rpm_limit - rpm_used
-   available_tpm = tpm_limit - tpm_used
-   n = min(available_rpm, floor(available_tpm / p95_output_tokens), MAX_DISPATCH)
-   If n = 0 → sleep until next window reset
-
-6. Fetch prompts
-   Query Firestore: status = PENDING, order by created_at ASC, limit n
-
-7. Atomic Firestore batch write
-   Set each prompt: status = RUNNING, running_since = now
-   Increment quota: rpm_used += n, tpm_used += sum(estimated_tokens)
-
-8. Enqueue to Cloud Tasks
-   One task per prompt on queue-{client_id}
-
-9. Sleep 1s → next iteration
-```
-
-**Loop exit condition:** exits when `pending + running == 0` for all jobs under this client.
-
----
-
-## 5. Worker Specification
-
-**Runtime:** Cloud Run, autoscaling, stateless.
-**Invocation:** HTTP POST from Cloud Tasks.
-**Concurrency:** One prompt per invocation.
-
-### Execution contract
-
-```
-1. Parse task payload
-2. Fetch LLM provider key from Secret Manager
-3. Call LLM provider API
-4. Handle response:
-
-   SUCCESS (2xx)
-   - Write result to GCS: results/{job_id}/part_{prompt_id}.jsonl
-   - Firestore: prompt status = COMPLETED
-   - Firestore: job.completed++, job.running--
-   - Firestore: update quota p95_output_tokens with actual output tokens
-   - Emit OTEL span
-
-   RATE LIMITED (429)
-   - Firestore: prompt status = PENDING (retry_count unchanged)
-   - Firestore: quota.cooldown_until = now + 60s
-   - Cloud Tasks: pause queue-{client_id}
-   - Emit OTEL span
-
-   TRANSIENT ERROR (5xx, timeout)
-   - retry_count++
-   - If retry_count < max_retries → Firestore: prompt status = PENDING
-   - If retry_count >= max_retries → FAILED + GCS error record
-
-   TERMINAL ERROR (4xx except 429)
-   - Firestore: prompt status = FAILED immediately
-   - GCS: write error record
-
-5. Return HTTP 200 to acknowledge Cloud Tasks delivery
-```
-
-**Job completion check:** after every counter update, worker checks `if completed + failed == total → job status = COMPLETED`.
-
----
-
-## 6. Quota and Token Estimation
-
-### Effective limit
-```
-effective_rpm = min(tier1_rpm, client_rpm)
-effective_tpm = min(tier1_tpm, client_tpm)
-```
-
-### Token estimation
-```
-estimated_tokens = tokenizer.count(prompt_text) + quota.p95_output_tokens
-```
-
-### P95 update
-Updated after every successful completion using an online algorithm. No historical data stored — only the running P95 and sample count.
-
-### Cold start
-When `p95_sample_count == 0`, use `model_defaults.p95_seed_tokens`. Conservative by design.
 
 ---
 
 ## 7. Error Classification
 
-| HTTP Code | Class | retry_count | Behaviour |
+| HTTP Code | Class | Retried | Behaviour |
 |---|---|---|---|
-| 2xx | Success | — | Complete prompt |
-| 429 | Quota | unchanged | PENDING + cooldown |
-| 500, 502, 503, 504 | Transient | +1 | PENDING if retries remain, else FAILED |
-| 408, timeout | Transient | +1 | PENDING if retries remain, else FAILED |
-| 400, 401, 403, 422 | Terminal | unchanged | FAILED immediately |
+| 2xx | Success | — | Response written to result buffer |
+| 429 | Rate limit | Yes (after cooldown) | Dispatch paused, rpm_target reduced, prompt back to retry queue |
+| 500, 502, 503, 504 | Transient | Yes | Prompt back to retry queue if attempts < max_retries |
+| 408, timeout | Transient | Yes | Same as 5xx transient |
+| 400, 401, 403, 422 | Terminal | No | Written to errors.jsonl immediately |
 
 ---
 
-## 8. Security Specification
+## 8. Rate Learning
+
+The execution pod learns the provider's real-time RPM and TPM limits dynamically. It does not rely on user-supplied `rpm`/`tpm` as exact values — they are upper bounds only.
+
+**Slow Start** (before any 429): `rpm_target *= 1.5` every 30 seconds. Progression: `10 → 15 → 22 → 33 → 49 → 73 → 110...`
+
+**On 429**: `dispatch_enabled = False` → drain in-flight → `rpm_target *= 0.75` → 60s cooldown → resume. Switch to congestion avoidance.
+
+**Congestion Avoidance** (after first 429): `rpm_target += 1` every 30 seconds. Slowly probes for unused headroom.
+
+**TPM**: `p95_tokens` is updated after every successful response using a rolling window of 1000 samples. `effective_rpm = min(rpm_target, tpm_limit / p95_tokens)`. Requests are spaced evenly: `interval = 60 / effective_rpm`.
+
+All rate state is in-memory. None of it touches Firestore.
+
+---
+
+## 9. Security
 
 | Concern | Implementation |
 |---|---|
-| Client identity | API key hashed SHA-256 + server salt → client_id |
-| LLM provider keys | GCP Secret Manager, fetched by workers at runtime |
-| Task payloads | Never contain raw API keys |
-| Result access | Signed GCS URLs, 1hr expiry |
-| Data isolation | Firestore rules + GCS IAM scoped by client_id |
-| Logs and traces | client_id used in all telemetry, never raw key |
+| Client API keys | Managed by Unkey. Never stored in PromptForge DB. Revocable via Unkey dashboard. |
+| Provider LLM keys | Stored in Firestore job record. Never logged, never exported to OTel. |
+| File upload | Client writes directly to GCS via signed URL. API never handles file contents. |
+| Result access | Signed GCS URLs with 1hr expiry. Only the owning client can request them. |
+| Data isolation | GCS paths and Firestore records scoped by `client_id`. |
+| OTel exports | Prompt text stripped before export. Only IDs, counts, codes, and timings leave GCP. |
 
 ---
 
-## 9. Observability Specification
+## 10. Observability
 
-### Trace attributes (every prompt span)
-```
-job_id, client_id, prompt_id, provider, model,
-retry_count, estimated_tokens, actual_tokens, latency_ms, status
-```
-
-### Key metrics
-
-| Metric | Type | Description |
-|---|---|---|
-| `rpm_utilization` | Gauge | Fraction of RPM budget used |
-| `tpm_utilization` | Gauge | Fraction of TPM budget used |
-| `queue_depth` | Gauge | Pending prompts per client |
-| `prompt_latency_ms` | Histogram | End-to-end prompt duration |
-| `llm_latency_ms` | Histogram | Provider API call duration |
-| `success_rate` | Gauge | completed / total |
-| `failure_rate` | Gauge | failed / total |
-| `429_total` | Counter | Rate limit events |
-| `cooldown_events_total` | Counter | Cooldown periods entered |
-| `tokens_input_total` | Counter | Cumulative input tokens |
-| `tokens_output_total` | Counter | Cumulative output tokens |
-| `estimated_cost_usd` | Gauge | Rolling cost estimate |
-
-### Structured log fields (all services)
-```
-timestamp, service, severity, job_id, client_id, prompt_id,
-provider, model, retry_count, latency_ms, error_code
-```
-
-### Alerting thresholds
-
-| Alert | Condition |
+| Tool | Role |
 |---|---|
-| Quota pressure | rpm_utilization > 0.95 for > 2 min |
-| Throttling | 429_total rate > 10/min |
-| Scheduler stale | queue_depth > 0 with no scheduler activity for > 5 min |
-| Worker error spike | failure_rate > 5% |
+| **Axiom** | Logs, traces, and metrics via OTel. One env var to connect. |
+| **Sentry** | Error tracking. Unhandled exceptions captured across all services with stack traces. |
+| **Better Stack** | External uptime monitoring. Public status page. |
+
+Every job is a root OTel trace. Every prompt dispatch is a child span carrying: `prompt_id`, `attempt`, `provider`, `model`, `latency_ms`, `prompt_tokens`, `completion_tokens`, `error_code`.
+
+Key metrics emitted: `rate.rpm_target`, `rate.effective_rpm`, `rate.p95_tokens`, `rate.429_events`, `prompts.completed`, `prompts.failed`, `llm.latency_ms`, `queue.retry_depth`, `buffer.size`.
+
+`prompt_id` is never used as a metric label (unbounded cardinality). Traces and structured logs only.
 
 ---
 
-## 10. Technology Stack
+## 11. Technology Stack
 
 | Component | Technology |
 |---|---|
-| API Layer | Cloud Run |
-| Scheduler | GKE (single pod, always-on) |
-| Task Queue | Cloud Tasks (per-client queues) |
-| Workers | Cloud Run (autoscaling) |
-| Operational State | Firestore |
+| API Layer | Cloud Run (Python) |
+| Job Launcher | Cloud Run (Python, ephemeral) |
+| Execution Engine | GKE Pod — one per job (Python, asyncio) |
+| LLM Provider Abstraction | LiteLLM — provider unification only |
+| Job State | Firestore |
 | Object Storage | Google Cloud Storage |
-| Secrets | GCP Secret Manager |
-| Providers | OpenAI, Gemini, Anthropic |
-| Tracing | OpenTelemetry → Tempo |
-| Logs | OpenTelemetry → Loki |
-| Metrics | OpenTelemetry → Mimir |
-| Dashboards | Grafana |
+| Event Routing | Eventarc (GCS OBJECT_FINALIZE) |
+| API Key Management | Unkey |
+| Infrastructure as Code | Pulumi (TypeScript) |
+| Logs + Traces + Metrics | Axiom (via OTel) |
+| Error Tracking | Sentry |
+| Uptime Monitoring | Better Stack |

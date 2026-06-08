@@ -72,7 +72,7 @@ Three layers. Each does one thing.
 
 **Orchestration** — A Cloud Run Job Launcher catches the storage event, validates your file, and creates a dedicated Kubernetes Job. It starts in milliseconds and exits the moment the pod is running.
 
-**Execution** — A GKE pod takes over entirely. It runs four concurrent loops: a dispatch loop that spaces requests by learned rate limits, a response handler that processes results asynchronously, a result buffer that batches storage writes, and a checkpoint writer that persists state every 30 seconds. The pod calls the LLM provider directly. No middleware. One pod per job. Isolated, self-healing, accountable.
+**Execution** — A GKE pod takes over entirely. It runs four concurrent loops: a dispatch loop that spaces requests by learned rate limits, a response handler that processes results asynchronously, a result buffer that batches storage writes, and a checkpoint writer that persists state every 30 seconds. All LLM calls go through LiteLLM — a self-hosted provider abstraction layer that normalises OpenAI, Anthropic, Gemini, and Mistral into a single interface. Adding a new provider requires no code change. One pod per job. Isolated, self-healing, accountable.
 
 ---
 
@@ -88,10 +88,17 @@ Most batch systems give you a success/failure count. We give you a trace per pro
 
 ## Built On
 
-Google Cloud Platform — Cloud Run, GKE, GCS, Firestore, Eventarc.
-OpenTelemetry for observability — pluggable to any backend.
-Python with asyncio for the execution engine.
-Kubernetes Jobs with automatic restart and checkpoint-based recovery.
+**Compute & Storage** — Google Cloud Platform: Cloud Run, GKE, GCS, Firestore, Eventarc.
+
+**Provider Abstraction** — LiteLLM. One interface to every LLM provider. Self-hosted, no data leaves GCP.
+
+**API Key Management** — Unkey. Key issuance, validation, revocation, and per-key rate limiting without custom auth code.
+
+**Infrastructure** — Pulumi. Infrastructure as TypeScript — GCS, GKE, Firestore, IAM, all versioned and repeatable.
+
+**Observability** — Axiom for logs, traces, and metrics via OpenTelemetry. Sentry for error tracking. Better Stack for uptime monitoring and status page.
+
+**Execution Engine** — Python with asyncio. Kubernetes Jobs with automatic restart and checkpoint-based recovery.
 
 ---
 

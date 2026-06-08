@@ -1,0 +1,48 @@
+services:
+
+  # Mock LLM provider — configurable RPM limit, injectable 429s
+  # Used for local testing of Phase 6 rate learning
+  mock-provider:
+    build:
+      context: .
+      dockerfile: tests/mocks/Dockerfile
+    ports:
+      - "${MOCK_PROVIDER_PORT:-9000}:9000"
+    environment:
+      RPM_LIMIT: ${MOCK_PROVIDER_RPM_LIMIT:-100}
+
+  # API service — POST /v1/jobs/init + status + results endpoints
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - mock-provider
+
+  # Launcher — not run directly in local dev (triggered by Eventarc in GCP)
+  # Run individually for integration tests:
+  #   docker compose run launcher
+  launcher:
+    build:
+      context: .
+      dockerfile: services/launcher/Dockerfile
+    env_file:
+      - .env
+    profiles:
+      - manual
+
+  # Execution pod — not run directly in local dev (spawned by launcher in GCP)
+  # Run individually against a local prompts.jsonl for end-to-end testing:
+  #   docker compose run execution
+  execution:
+    build:
+      context: .
+      dockerfile: services/execution/Dockerfile
+    env_file:
+      - .env
+    profiles:
+      - manual

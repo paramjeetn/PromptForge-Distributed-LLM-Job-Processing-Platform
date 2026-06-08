@@ -1,0 +1,4 @@
+encryptionsalt: v1:I8tYeibSTCU=:v1:5ilGD36+cT6LbYK5:oKZjAeY0T51CsOR0DOCp1ZUjX+K3hg==
+config:
+  gcp:project: promptforge-1212
+  gcp:region: us-central1

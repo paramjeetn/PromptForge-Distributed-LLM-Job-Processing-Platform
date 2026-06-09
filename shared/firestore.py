@@ -38,8 +38,8 @@ def get_oldest_pending_job(client_id: str) -> Optional[JobRecord]:
     docs = (
         _get_client()
         .collection("jobs")
-        .where("client_id", "==", client_id)
-        .where("status", "==", JobStatus.PENDING)
+        .where(filter=firestore.FieldFilter("client_id", "==", client_id))
+        .where(filter=firestore.FieldFilter("status", "==", JobStatus.PENDING))
         .order_by("created_at")
         .limit(1)
         .stream()
@@ -47,3 +47,19 @@ def get_oldest_pending_job(client_id: str) -> Optional[JobRecord]:
     for doc in docs:
         return JobRecord(**doc.to_dict())
     return None
+
+
+def has_active_job(client_id: str) -> bool:
+    """Returns True if the client has any job in QUEUED or PROCESSING status."""
+    for status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+        docs = (
+            _get_client()
+            .collection("jobs")
+            .where(filter=firestore.FieldFilter("client_id", "==", client_id))
+            .where(filter=firestore.FieldFilter("status", "==", status))
+            .limit(1)
+            .stream()
+        )
+        for _ in docs:
+            return True
+    return False

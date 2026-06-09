@@ -1,4 +1,4 @@
-.PHONY: help lint test build deploy infra-preview infra-up dev
+.PHONY: help lint test test-unit test-integration build deploy infra-preview infra-up dev
 
 help:
 	@echo "PromptForge"
@@ -26,7 +26,8 @@ test-unit:
 	pytest tests/unit -v
 
 test-integration:
-	pytest tests/integration -v
+	@echo "Requires: gcloud auth application-default login  +  .env with GCP values"
+	pytest tests/integration -v -s
 
 # ─── Lint ─────────────────────────────────────────────────────────────────────
 

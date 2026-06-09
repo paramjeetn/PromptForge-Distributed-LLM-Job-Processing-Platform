@@ -28,6 +28,11 @@ class JobRecord(BaseModel):
     rpm: Optional[int] = None
     tpm: Optional[int] = None
 
+    # Secret Manager resource name for the provider API key, e.g.
+    # "projects/my-project/secrets/openai-key/versions/latest"
+    # Set when the job is created; injected into the execution pod as API_KEY_REF.
+    api_key_ref: Optional[str] = None
+
     # Set after the client uploads prompts.jsonl
     upload_path: Optional[str] = None
     prompt_count: Optional[int] = None

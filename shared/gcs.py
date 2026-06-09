@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import google.auth
+import google.auth.impersonated_credentials
 import google.auth.transport.requests
 from google.cloud import storage
 
@@ -22,12 +24,28 @@ def generate_signed_upload_url(
     blob_path: str,
     expiry_minutes: int = 15,
 ) -> tuple[str, datetime]:
-    # Refresh credentials so the access token is current for signing.
-    # On Cloud Run / GKE the default credentials carry a service_account_email
-    # which is required for V4 signed URLs without a key file.
-    credentials, _ = google.auth.default()
+    # V4 signed URLs require credentials that can sign (i.e. a service account).
+    # On Cloud Run / GKE the default credentials are attached to a service account
+    # and already support signing. Locally, `gcloud auth application-default login`
+    # returns user credentials which cannot sign directly — impersonate the API
+    # service account via the IAM Credentials API instead.
+    credentials, project = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
     auth_req = google.auth.transport.requests.Request()
     credentials.refresh(auth_req)
+
+    if not hasattr(credentials, "service_account_email"):
+        sa = os.environ.get(
+            "SIGNING_SERVICE_ACCOUNT",
+            f"promptforge-api@{project or 'promptforge-1212'}.iam.gserviceaccount.com",
+        )
+        credentials = google.auth.impersonated_credentials.Credentials(
+            source_credentials=credentials,
+            target_principal=sa,
+            target_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        credentials.refresh(auth_req)
 
     client = _get_client()
     blob = client.bucket(bucket_name).blob(blob_path)

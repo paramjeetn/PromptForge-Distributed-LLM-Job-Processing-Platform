@@ -1,0 +1,12 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - -t
+      - us-central1-docker.pkg.dev/promptforge-1212/promptforge/api:latest
+      - -f
+      - services/api/Dockerfile
+      - .
+
+images:
+  - us-central1-docker.pkg.dev/promptforge-1212/promptforge/api:latest

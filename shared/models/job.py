@@ -39,6 +39,10 @@ class JobRecord(BaseModel):
     invalid_count: Optional[int] = None
     file_size_bytes: Optional[int] = None
 
+    # Set by the execution pod on completion
+    completed_count: Optional[int] = None
+    failed_count: Optional[int] = None
+
     created_at: datetime
     uploaded_at: Optional[datetime] = None
     queued_at: Optional[datetime] = None

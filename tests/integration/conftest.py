@@ -74,6 +74,10 @@ def cleanup(test_job_id: str):
         (INPUT_BUCKET,  f"{TEST_CLIENT_ID}/{test_job_id}/prompts.jsonl"),
         (OUTPUT_BUCKET, f"{TEST_CLIENT_ID}/{test_job_id}/errors.jsonl"),
         (OUTPUT_BUCKET, f"{TEST_CLIENT_ID}/{test_job_id}/state.json"),
+        (OUTPUT_BUCKET, f"{TEST_CLIENT_ID}/{test_job_id}/results_final.jsonl"),
+        # Phase 5 part files: clean up up to 10 parts
+        *[(OUTPUT_BUCKET, f"{TEST_CLIENT_ID}/{test_job_id}/results_part_{i:03d}.jsonl")
+          for i in range(1, 11)],
     ]
 
     for bucket, path in _blobs_to_delete:

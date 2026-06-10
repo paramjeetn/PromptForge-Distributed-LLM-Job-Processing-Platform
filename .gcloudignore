@@ -1,0 +1,13 @@
+.git
+.gitignore
+infra/node_modules
+infra/.pulumi
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.venv
+*.egg-info
+.env
+docs/
+tests/
+.api_keys

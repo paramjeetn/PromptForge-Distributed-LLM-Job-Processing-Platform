@@ -1,15 +1,15 @@
 import os
+import sys
 
-import sentry_sdk
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
 from fastapi import FastAPI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN", ""),
-    traces_sample_rate=0.1,
-)
+from shared.observability import setup as setup_observability
+setup_observability("api")
 
 app = FastAPI(title="PromptForge API", version="1.0.0")
 

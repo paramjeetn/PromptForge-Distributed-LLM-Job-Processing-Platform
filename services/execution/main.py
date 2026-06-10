@@ -19,6 +19,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from shared.observability import setup as setup_observability
+setup_observability("execution")
+
 from shared.firestore import update_job
 from shared.models.job import JobStatus
 from shared.secrets import fetch_api_key

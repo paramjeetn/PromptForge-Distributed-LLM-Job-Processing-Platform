@@ -34,12 +34,16 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 import litellm
+from opentelemetry.trace import StatusCode
 
 from shared.gcs import stream_read
+from shared.observability import get_tracer
 from services.execution.config import JobConfig
 from services.execution.buffer import ResultBuffer
 from services.execution.rate.controller import RateController
 from services.execution.checkpoint import Checkpoint
+
+_tracer = get_tracer("promptforge.dispatch")
 
 
 @dataclass
@@ -140,68 +144,84 @@ async def run(config: JobConfig, api_key: str) -> DispatchResult:
             await asyncio.sleep(rate.cooldown_remaining)
 
         print(f"[dispatch] calling LLM prompt_id={item.prompt_id} attempt={item.attempt+1}", flush=True)
-        try:
-            t0 = time.monotonic()
-            # Run in thread pool so the event loop is not blocked while waiting
-            # for the HTTP response (litellm Gemini uses sync gRPC under the hood).
-            resp = await asyncio.to_thread(
-                litellm.completion,
-                model=f"{config.provider}/{config.model}",
-                messages=[{"role": "user", "content": item.prompt}],
-                api_key=api_key,
-                timeout=30,
-            )
-            latency_ms = int((time.monotonic() - t0) * 1000)
+        with _tracer.start_as_current_span("llm.completion") as span:
+            span.set_attribute("job.id", config.job_id)
+            span.set_attribute("prompt.id", str(item.prompt_id))
+            span.set_attribute("llm.provider", config.provider)
+            span.set_attribute("llm.model", config.model)
+            span.set_attribute("attempt", item.attempt + 1)
+            try:
+                t0 = time.monotonic()
+                # Run in thread pool so the event loop is not blocked while waiting
+                # for the HTTP response (litellm Gemini uses sync gRPC under the hood).
+                resp = await asyncio.to_thread(
+                    litellm.completion,
+                    model=f"{config.provider}/{config.model}",
+                    messages=[{"role": "user", "content": item.prompt}],
+                    api_key=api_key,
+                    timeout=30,
+                )
+                latency_ms = int((time.monotonic() - t0) * 1000)
 
-            usage = getattr(resp, "usage", None)
-            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                usage = getattr(resp, "usage", None)
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
 
-            record = {
-                "prompt_id": item.prompt_id,
-                "response": resp.choices[0].message.content,
-                "model": config.model,
-                "provider": config.provider,
-                "tokens": {
-                    "prompt": prompt_tokens,
-                    "completion": completion_tokens,
-                },
-                "latency_ms": latency_ms,
-                "attempt": item.attempt + 1,
-            }
+                span.set_attribute("llm.latency_ms", latency_ms)
+                span.set_attribute("llm.prompt_tokens", prompt_tokens)
+                span.set_attribute("llm.completion_tokens", completion_tokens)
 
-            should_flush = buffer.add_result(record)
-            if should_flush:
-                path = buffer.flush_results()
-                if path:
-                    result.parts_written.append(path)
+                record = {
+                    "prompt_id": item.prompt_id,
+                    "response": resp.choices[0].message.content,
+                    "model": config.model,
+                    "provider": config.provider,
+                    "tokens": {
+                        "prompt": prompt_tokens,
+                        "completion": completion_tokens,
+                    },
+                    "latency_ms": latency_ms,
+                    "attempt": item.attempt + 1,
+                }
 
-            result.completed += 1
-            rate.record_success(completion_tokens)
-            print(f"[dispatch] prompt_id={item.prompt_id} OK latency={latency_ms}ms tokens={completion_tokens}", flush=True)
+                should_flush = buffer.add_result(record)
+                if should_flush:
+                    path = buffer.flush_results()
+                    if path:
+                        result.parts_written.append(path)
 
-        except litellm.RateLimitError:
-            rate.record_429()
-            item.attempt += 1
-            if item.attempt < config.max_retries:
-                retry_deque.append(item)
-            else:
-                buffer.add_error(_error_record(item, "rate_limit_exceeded"))
-                result.failed += 1
+                result.completed += 1
+                rate.record_success(completion_tokens)
+                print(f"[dispatch] prompt_id={item.prompt_id} OK latency={latency_ms}ms tokens={completion_tokens}", flush=True)
 
-        except _RETRYABLE as exc:
-            item.attempt += 1
-            if item.attempt < config.max_retries:
-                retry_deque.append(item)
-            else:
+            except litellm.RateLimitError as exc:
+                span.record_exception(exc)
+                span.set_status(StatusCode.ERROR, "rate_limit")
+                rate.record_429()
+                item.attempt += 1
+                if item.attempt < config.max_retries:
+                    retry_deque.append(item)
+                else:
+                    buffer.add_error(_error_record(item, "rate_limit_exceeded"))
+                    result.failed += 1
+
+            except _RETRYABLE as exc:
+                span.record_exception(exc)
+                span.set_status(StatusCode.ERROR, str(exc))
+                item.attempt += 1
+                if item.attempt < config.max_retries:
+                    retry_deque.append(item)
+                else:
+                    buffer.add_error(_error_record(item, str(exc)))
+                    result.failed += 1
+
+            except Exception as exc:
+                # Non-retryable (400, 401, 403, bad request, etc.)
+                span.record_exception(exc)
+                span.set_status(StatusCode.ERROR, str(exc))
+                print(f"[dispatch] prompt_id={item.prompt_id} ERROR (non-retryable): {exc}", flush=True)
                 buffer.add_error(_error_record(item, str(exc)))
                 result.failed += 1
-
-        except Exception as exc:
-            # Non-retryable (400, 401, 403, bad request, etc.)
-            print(f"[dispatch] prompt_id={item.prompt_id} ERROR (non-retryable): {exc}", flush=True)
-            buffer.add_error(_error_record(item, str(exc)))
-            result.failed += 1
 
     def _spawn(item: _PromptItem) -> None:
         task = asyncio.create_task(_handle(item))

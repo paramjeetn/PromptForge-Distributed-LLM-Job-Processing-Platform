@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import os
 
-import sentry_sdk
 from cloudevents.http import from_http
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -26,10 +25,8 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN", ""),
-    traces_sample_rate=0.1,
-)
+from shared.observability import setup as setup_observability
+setup_observability("launcher")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("launcher")

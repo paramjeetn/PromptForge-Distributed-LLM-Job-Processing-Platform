@@ -1,5 +1,5 @@
 """
-Core dispatch loop — integrates Phases 4, 5, and 6.
+Core dispatch loop — integrates Phases 4, 5, 6, and 7.
 
 Phase 4 — Baseline execution:
   Stream prompts from GCS, call LLM via LiteLLM, collect results.
@@ -10,6 +10,10 @@ Phase 5 — Result buffer:
 Phase 6 — Rate learning:
   Start at rpm=10, slow-start doubles every 30s, backoff on 429.
   TPM ceiling auto-adjusts from rolling p95 token size.
+
+Phase 7 — Checkpointing:
+  Write state.json to GCS every 30s. On startup, load state and skip
+  already-processed prompts so a pod crash resumes cleanly.
 
 Exit condition: stream EOF + all in-flight tasks done + retry queue empty.
 """
@@ -35,6 +39,7 @@ from shared.gcs import stream_read
 from services.execution.config import JobConfig
 from services.execution.buffer import ResultBuffer
 from services.execution.rate.controller import RateController
+from services.execution.checkpoint import Checkpoint
 
 
 @dataclass
@@ -104,7 +109,23 @@ async def run(config: JobConfig, api_key: str) -> DispatchResult:
     """
     rate = RateController(rpm_cap=config.rpm_limit, tpm_limit=config.tpm_limit)
     buffer = ResultBuffer(config.output_bucket, config.output_prefix)
+    checkpoint = Checkpoint(config.output_bucket, config.output_prefix)
     result = DispatchResult()
+
+    # ── Phase 7: Resume from checkpoint if one exists ─────────────────
+    skip_count = 0
+    saved = checkpoint.load()
+    if saved:
+        skip_count = saved.completed + saved.failed
+        result.completed = saved.completed
+        result.failed = saved.failed
+        buffer._part_num = saved.part_num
+        rate.restore(saved.rate)
+        print(
+            f"[dispatch] resuming from checkpoint: skip={skip_count} "
+            f"completed={saved.completed} failed={saved.failed} part_num={saved.part_num}",
+            flush=True,
+        )
 
     in_flight: set[asyncio.Task] = set()
     retry_deque: deque[_PromptItem] = deque()
@@ -194,13 +215,23 @@ async def run(config: JobConfig, api_key: str) -> DispatchResult:
             await asyncio.sleep(rate.interval)
 
     # ── Main dispatch loop ────────────────────────────────────────────
+    skipped = 0
     async for raw_line in _gcs_line_stream(config.input_bucket, config.prompts_path):
+        # Phase 7: skip already-processed prompts on resume
+        if skipped < skip_count:
+            skipped += 1
+            continue
+
         # Drain retry queue first (retries have priority)
         await _drain_retries()
 
         data = json.loads(raw_line)
         _spawn(_PromptItem(prompt_id=data["prompt_id"], prompt=data["prompt"]))
         await asyncio.sleep(rate.interval)
+
+        # Phase 7: save checkpoint every ~30s
+        if checkpoint.should_save():
+            checkpoint.save(result.completed, result.failed, buffer._part_num, rate.state_snapshot())
 
     # ── Wait for all in-flight tasks to finish ────────────────────────
     while in_flight:

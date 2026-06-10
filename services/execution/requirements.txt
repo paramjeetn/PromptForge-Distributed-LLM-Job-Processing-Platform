@@ -5,3 +5,4 @@ google-cloud-secret-manager>=2.20
 google-auth>=2.35
 sentry-sdk>=2.17
 python-dotenv>=1.0
+kubernetes>=28.1

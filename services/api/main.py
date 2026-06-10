@@ -14,7 +14,12 @@ sentry_sdk.init(
 app = FastAPI(title="PromptForge API", version="1.0.0")
 
 from routes.jobs import router as jobs_router
+from routes.status import router as status_router
+from routes.results import router as results_router
+
 app.include_router(jobs_router, prefix="/v1")
+app.include_router(status_router, prefix="/v1")
+app.include_router(results_router, prefix="/v1")
 
 
 @app.get("/healthz")

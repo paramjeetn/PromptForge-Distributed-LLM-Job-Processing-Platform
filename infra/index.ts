@@ -6,6 +6,8 @@ import { firestoreDb } from "./firestore";
 import { cluster } from "./gke";
 import { nat } from "./nat";
 import { execK8sSa } from "./k8s";
+import { registry, registryUrl } from "./registry";
+import { apiService, launcherService } from "./cloudrun";
 import "./eventarc";
 
 // ─── Outputs ──────────────────────────────────────────────────────────────────
@@ -26,3 +28,9 @@ export const execServiceAccountEmail = execSa.email;
 
 export const natName = nat.name;
 export const execK8sSaName = execK8sSa.metadata.name;
+
+export const artifactRegistryUrl = registryUrl;
+
+// Cloud Run service URLs — use these to call the API and send webhooks
+export const apiServiceUrl = apiService.statuses[0].url;
+export const launcherServiceUrl = launcherService.statuses[0].url;

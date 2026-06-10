@@ -106,5 +106,23 @@ new gcp.projects.IAMMember("exec-container", {
     member: pulumi.interpolate`serviceAccount:${execSa.email}`,
 });
 
+// ─── Secret Manager access ────────────────────────────────────────────────────
+// Cloud Run injects secret env vars using the service's SA — it must have
+// secretAccessor on each secret referenced in the Cloud Run service definition.
+
+// API SA: reads UNKEY_API_ID, UNKEY_ROOT_KEY, SENTRY_DSN, AXIOM_API_KEY
+new gcp.projects.IAMMember("api-secrets", {
+    project: project,
+    role: "roles/secretmanager.secretAccessor",
+    member: pulumi.interpolate`serviceAccount:${apiSa.email}`,
+});
+
+// Launcher SA: reads SENTRY_DSN, AXIOM_API_KEY
+new gcp.projects.IAMMember("launcher-secrets", {
+    project: project,
+    role: "roles/secretmanager.secretAccessor",
+    member: pulumi.interpolate`serviceAccount:${launcherSa.email}`,
+});
+
 // Workload Identity binding lives in gke.ts — it depends on the cluster
 // being fully created first (the identity pool only exists after cluster creation).

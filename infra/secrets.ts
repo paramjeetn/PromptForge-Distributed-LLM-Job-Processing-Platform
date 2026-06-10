@@ -35,3 +35,9 @@ export const unkeyRootKeySecret = createSecret("unkey-root-key", appConfig.requi
 // Observability — Sentry + Axiom (API + Launcher services)
 export const sentryDsnSecret    = createSecret("sentry-dsn",     appConfig.requireSecret("sentryDsn"));
 export const axiomApiKeySecret  = createSecret("axiom-api-key",  appConfig.requireSecret("axiomApiKey"));
+
+// LLM provider API keys — read by execution pods via Secret Manager.
+// Name convention must match what job_init constructs:
+//   projects/{project}/secrets/{provider}-api-key/versions/latest
+export const openaiApiKeySecret  = createSecret("openai-api-key",  appConfig.requireSecret("openaiApiKey"));
+export const geminiApiKeySecret  = createSecret("gemini-api-key",  appConfig.requireSecret("geminiApiKey"));

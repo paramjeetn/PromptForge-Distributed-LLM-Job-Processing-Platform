@@ -66,22 +66,24 @@ build-push:
 
 # Full deploy: build images, push to Artifact Registry, then apply infra.
 deploy: build-push
-	cd infra && pulumi up --yes
+	PULUMI_CONFIG_PASSPHRASE="" cd infra && pulumi up --yes
 
 # ─── Infrastructure ───────────────────────────────────────────────────────────
 
 # Run once after cloning — loads secrets from .env into Pulumi stack config.
 # Requires .env to have: UNKEY_API_ID, UNKEY_ROOT_KEY, SENTRY_DSN, AXIOM_API_KEY
 infra-config:
-	@set -a && . ./.env && set +a && cd infra && \
-		pulumi config set --secret unkeyApiId   "$$UNKEY_API_ID"   && \
-		pulumi config set --secret unkeyRootKey "$$UNKEY_ROOT_KEY" && \
-		pulumi config set --secret sentryDsn    "$$SENTRY_DSN"     && \
-		pulumi config set --secret axiomApiKey  "$$AXIOM_API_KEY"
+	@PULUMI_CONFIG_PASSPHRASE="" bash -c 'set -a && . ./.env && set +a && cd infra && \
+		pulumi config set --secret unkeyApiId   "$$UNKEY_API_ID"    && \
+		pulumi config set --secret unkeyRootKey "$$UNKEY_ROOT_KEY"  && \
+		pulumi config set --secret sentryDsn    "$$SENTRY_DSN"      && \
+		pulumi config set --secret axiomApiKey  "$$AXIOM_API_KEY"   && \
+		pulumi config set --secret openaiApiKey "$$OPENAI_API_KEY"  && \
+		pulumi config set --secret geminiApiKey "$$GEMINI_API_KEY"'
 	@echo "Pulumi secrets set from .env"
 
 infra-preview:
-	cd infra && pulumi preview
+	PULUMI_CONFIG_PASSPHRASE="" cd infra && pulumi preview
 
 infra-up:
-	cd infra && pulumi up
+	PULUMI_CONFIG_PASSPHRASE="" cd infra && pulumi up

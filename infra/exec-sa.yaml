@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promptforge-exec
+  namespace: default
+  annotations:
+    iam.gke.io/gcp-service-account: promptforge-exec@promptforge-1212.iam.gserviceaccount.com

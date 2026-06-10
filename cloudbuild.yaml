@@ -1,12 +1,21 @@
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - build
-      - -t
-      - us-central1-docker.pkg.dev/promptforge-1212/promptforge/execution:latest
-      - -f
-      - services/execution/Dockerfile
-      - .
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/api:latest',
+                    '-f', 'services/api/Dockerfile', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/launcher:latest',
+                    '-f', 'services/launcher/Dockerfile', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/execution:latest',
+                    '-f', 'services/execution/Dockerfile', '.']
 
 images:
-  - us-central1-docker.pkg.dev/promptforge-1212/promptforge/execution:latest
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/api:latest'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/launcher:latest'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/promptforge/execution:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

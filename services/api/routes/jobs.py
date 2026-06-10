@@ -55,6 +55,14 @@ async def job_init(
         expiry_minutes=15,
     )
 
+    # Point the execution pod at the provider's API key in Secret Manager.
+    # Convention: projects/{project}/secrets/{provider}-api-key/versions/latest
+    gcp_project = os.environ.get("GCP_PROJECT_ID", "")
+    api_key_ref = (
+        f"projects/{gcp_project}/secrets/{body.provider}-api-key/versions/latest"
+        if gcp_project else None
+    )
+
     job = JobRecord(
         job_id=job_id,
         client_id=client_id,
@@ -64,6 +72,7 @@ async def job_init(
         max_retries=body.max_retries,
         rpm=body.rpm,
         tpm=body.tpm,
+        api_key_ref=api_key_ref,
         upload_path=upload_path,
         created_at=datetime.now(timezone.utc),
     )

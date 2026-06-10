@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -70,7 +70,7 @@ class TestHappyPath:
         prompts = _make_prompts("What is 2+2?", "What is 10-3?")
 
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", new_callable=AsyncMock,
+             patch("loops.dispatch.litellm.completion",
                    return_value=_fake_llm_response("4")), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):
@@ -89,7 +89,7 @@ class TestHappyPath:
             return False  # don't flush
 
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", new_callable=AsyncMock,
+             patch("loops.dispatch.litellm.completion",
                    return_value=_fake_llm_response("4")), \
              patch("loops.dispatch.ResultBuffer.add_result", side_effect=fake_add_result), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
@@ -110,7 +110,7 @@ class TestHappyPath:
         lines = [b"", b"   ", json.dumps({"prompt_id": 1, "prompt": "hi"}).encode()]
 
         with patch("loops.dispatch.stream_read", return_value=iter(lines)), \
-             patch("loops.dispatch.litellm.acompletion", new_callable=AsyncMock,
+             patch("loops.dispatch.litellm.completion",
                    return_value=_fake_llm_response("hi")), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):
@@ -126,7 +126,7 @@ class TestRetries:
         prompts = _make_prompts("Retry me")
         call_count = 0
 
-        async def flaky(*args, **kwargs):
+        def flaky(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -136,7 +136,7 @@ class TestRetries:
             return _fake_llm_response("ok")
 
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", side_effect=flaky), \
+             patch("loops.dispatch.litellm.completion", side_effect=flaky), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):
 
@@ -150,7 +150,7 @@ class TestRetries:
         import litellm as _litellm
         prompts = _make_prompts("Always fail")
 
-        async def always_503(*args, **kwargs):
+        def always_503(*args, **kwargs):
             raise _litellm.ServiceUnavailableError(
                 message="503", llm_provider="openai", model="gpt-4o"
             )
@@ -161,7 +161,7 @@ class TestRetries:
             captured_errors.append(record)
 
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", side_effect=always_503), \
+             patch("loops.dispatch.litellm.completion", side_effect=always_503), \
              patch("loops.dispatch.ResultBuffer.add_error", side_effect=fake_add_error), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):
@@ -177,7 +177,7 @@ class TestRetries:
         prompts = _make_prompts("Bad request")
         call_count = 0
 
-        async def bad_request(*args, **kwargs):
+        def bad_request(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             raise _litellm.BadRequestError(
@@ -187,7 +187,7 @@ class TestRetries:
         captured_errors = []
 
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", side_effect=bad_request), \
+             patch("loops.dispatch.litellm.completion", side_effect=bad_request), \
              patch("loops.dispatch.ResultBuffer.add_error", side_effect=lambda r: captured_errors.append(r)), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):
@@ -217,7 +217,7 @@ class TestRateControllerIntegration:
         prompts = _make_prompts("Rate limited")
         call_count = 0
 
-        async def rate_limited(*args, **kwargs):
+        def rate_limited(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -228,7 +228,7 @@ class TestRateControllerIntegration:
 
         # Patch cooldown_remaining to 0 so test doesn't actually sleep 60s
         with patch("loops.dispatch.stream_read", return_value=iter(prompts)), \
-             patch("loops.dispatch.litellm.acompletion", side_effect=rate_limited), \
+             patch("loops.dispatch.litellm.completion", side_effect=rate_limited), \
              patch("loops.dispatch.RateController.cooldown_remaining", new_callable=lambda: property(lambda self: 0.0)), \
              patch("loops.dispatch.ResultBuffer.final_flush"), \
              patch("loops.dispatch.ResultBuffer.flush_results"):

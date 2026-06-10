@@ -22,7 +22,7 @@ import sys
 import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -110,8 +110,7 @@ class TestHappyPath:
         write_bytes(INPUT_BUCKET, f"{TEST_CLIENT_ID}/{exec_job_id}/prompts.jsonl", prompts)
         create_job(_make_job_record(exec_job_id))
 
-        with patch("loops.dispatch.litellm.acompletion", new_callable=AsyncMock,
-                   return_value=_fake_response("2")):
+        with patch("loops.dispatch.litellm.completion", return_value=_fake_response("2")):
             result = asyncio.run(dispatch_run(_make_config(exec_job_id, prompt_count=5), "test-key"))
 
         assert result.completed == 5
@@ -136,8 +135,7 @@ class TestHappyPath:
         write_bytes(INPUT_BUCKET, f"{TEST_CLIENT_ID}/{exec_job_id}/prompts.jsonl", prompts)
         create_job(_make_job_record(exec_job_id))
 
-        with patch("loops.dispatch.litellm.acompletion", new_callable=AsyncMock,
-                   return_value=_fake_response("short")):
+        with patch("loops.dispatch.litellm.completion", return_value=_fake_response("short")):
             result = asyncio.run(dispatch_run(_make_config(exec_job_id, prompt_count=3), "test-key"))
 
         assert result.completed == 3
@@ -156,12 +154,12 @@ class TestErrorHandling:
         write_bytes(INPUT_BUCKET, f"{TEST_CLIENT_ID}/{exec_job_id}/prompts.jsonl", prompts)
         create_job(_make_job_record(exec_job_id))
 
-        async def bad_request(*args, **kwargs):
+        def bad_request(*args, **kwargs):
             raise _litellm.BadRequestError(
                 message="400 invalid request", llm_provider="openai", model="gpt-4o"
             )
 
-        with patch("loops.dispatch.litellm.acompletion", side_effect=bad_request):
+        with patch("loops.dispatch.litellm.completion", side_effect=bad_request):
             result = asyncio.run(dispatch_run(_make_config(exec_job_id, prompt_count=1), "test-key"))
 
         assert result.failed == 1
@@ -182,7 +180,7 @@ class TestErrorHandling:
         create_job(_make_job_record(exec_job_id))
         call_count = 0
 
-        async def flaky(*args, **kwargs):
+        def flaky(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -191,7 +189,7 @@ class TestErrorHandling:
                 )
             return _fake_response("ok on retry")
 
-        with patch("loops.dispatch.litellm.acompletion", side_effect=flaky):
+        with patch("loops.dispatch.litellm.completion", side_effect=flaky):
             result = asyncio.run(dispatch_run(_make_config(exec_job_id, prompt_count=1), "test-key"))
 
         assert result.completed == 1
@@ -212,7 +210,7 @@ class TestMixedResults:
         write_bytes(INPUT_BUCKET, f"{TEST_CLIENT_ID}/{exec_job_id}/prompts.jsonl", prompts)
         create_job(_make_job_record(exec_job_id))
 
-        async def selective_fail(*args, **kwargs):
+        def selective_fail(*args, **kwargs):
             prompt_text = kwargs.get("messages", [{}])[0].get("content", "")
             if "2+1" in prompt_text:  # prompt_id=2
                 raise _litellm.BadRequestError(
@@ -220,7 +218,7 @@ class TestMixedResults:
                 )
             return _fake_response("ok")
 
-        with patch("loops.dispatch.litellm.acompletion", side_effect=selective_fail):
+        with patch("loops.dispatch.litellm.completion", side_effect=selective_fail):
             result = asyncio.run(dispatch_run(_make_config(exec_job_id, prompt_count=3), "test-key"))
 
         assert result.completed == 2

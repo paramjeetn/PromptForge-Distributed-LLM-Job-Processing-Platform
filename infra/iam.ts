@@ -99,5 +99,12 @@ new gcp.projects.IAMMember("exec-secrets", {
     member: pulumi.interpolate`serviceAccount:${execSa.email}`,
 });
 
+// GKE: spawn the next queued job after current job completes (Phase 8)
+new gcp.projects.IAMMember("exec-container", {
+    project: project,
+    role: "roles/container.developer",
+    member: pulumi.interpolate`serviceAccount:${execSa.email}`,
+});
+
 // Workload Identity binding lives in gke.ts — it depends on the cluster
 // being fully created first (the identity pool only exists after cluster creation).

@@ -5,8 +5,8 @@
 <h1 align="center">PromptForge</h1>
 
 <p align="center">
-  <strong>Distributed LLM batch job processing — at any scale.</strong><br/>
-  Submit a file of prompts. Get every result back. Reliably.
+  <strong>Distributed LLM batch processing — at any scale, without babysitting.</strong><br/>
+  Upload a file of prompts. Every result comes back. Reliably.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/runtime-Python%20%2B%20asyncio-3776AB?style=flat-square&logo=python&logoColor=white" alt="Runtime"/>
   <img src="https://img.shields.io/badge/infra-GKE%20%2B%20Cloud%20Run-34A853?style=flat-square" alt="Infra"/>
   <img src="https://img.shields.io/badge/observability-OpenTelemetry-F5A623?style=flat-square&logo=opentelemetry&logoColor=white" alt="Observability"/>
-  <img src="https://img.shields.io/badge/status-design%20phase-lightgrey?style=flat-square" alt="Status"/>
+  <img src="https://img.shields.io/badge/status-live-brightgreen?style=flat-square" alt="Status"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"/>
 </p>
 
@@ -24,332 +24,164 @@
 
 Running thousands of prompts against an LLM provider is not just an API call problem. It is a systems problem.
 
-Providers impose rate limits. Requests fail. Pods crash. Files are too large to hold in memory. You need to know exactly which prompts succeeded, which failed, and why — at a per-prompt level. And you need all of that without babysitting the process.
+Providers impose rate limits. Pods crash mid-job. Files are too large to hold in memory. You need to know exactly which prompts succeeded, which failed, and why — at a per-prompt level — without having to watch it happen.
 
-Most teams build fragile scripts that break at scale, or pay for expensive managed pipelines that offer no visibility. PromptForge is neither.
-
----
-
-## What It Does
-
-You upload a JSONL file of prompts. PromptForge processes every prompt against your chosen LLM provider — respecting rate limits, surviving failures, checkpointing state — and returns all results via signed download URLs.
-
-That's the contract. Everything underneath is what makes it work at scale.
+Most teams write fragile scripts that break at scale. PromptForge is a purpose-built platform that handles all of it: rate learning, failure recovery, checkpointing, result reconciliation, and observability — without any manual configuration.
 
 ---
 
-## Features
+## How It Works
 
-| Capability | What it means |
-|---|---|
-| **Dynamic rate learning** | No manual RPM/TPM tuning. Uses TCP-inspired slow-start and congestion avoidance to discover real provider limits at runtime. |
-| **Memory-constant streaming** | Prompts are read line-by-line from GCS via byte-range streams. A 10M-prompt job uses the same pod memory as a 100-prompt job. |
-| **Checkpointed recovery** | Execution state is persisted to GCS every 30 seconds. Pod crashes are transparent — Kubernetes restarts the pod and it resumes from the last checkpoint. |
-| **Prompt-level observability** | Every dispatch is a traced span with token counts, latency, retry history, and error codes. Rate learning state is emitted as real-time gauges. |
-| **Batched storage writes** | Results buffer in memory and flush in batches. 1M prompts produce ~2,000 GCS writes, not 1 million. |
-| **Reconciliation on completion** | A bitset pass across all result and error files detects any silently lost prompts. Every dropped ID is logged by name to the OTel stack. |
-| **Isolated per-job execution** | One GKE pod per job. No shared execution state between clients. A failure in one job cannot affect another. |
-| **Sequential job queuing** | Multiple jobs from the same client run one at a time. No prompt collision, no resource contention. Queue management is automatic. |
+The system is organized into three services. Nothing polls — every state transition is triggered by an event.
 
----
+### Ingestion — Cloud Run API
 
-## Architecture
+A client calls `POST /v1/jobs/init` with a provider, model, and optional rate limits. The API creates a job record in Firestore and returns a signed GCS upload URL. The client writes the prompt file directly to Google Cloud Storage — no proxy, no bottleneck. The API's job ends here.
 
-PromptForge is organized into three layers:
+### Orchestration — Cloud Run Launcher
 
-### Ingestion
-A **Cloud Run API** accepts job requests and returns a signed GCS upload URL. The client writes the prompt file directly to storage — no proxy, no bottleneck.
+When the upload lands in GCS, an Eventarc `OBJECT_FINALIZE` event fires. The Launcher validates every line of the JSONL file (invalid lines go to `errors.jsonl`, the job continues), updates the job state in Firestore, and creates a GKE Kubernetes Job. The Launcher exits as soon as the pod is scheduled. It has no ongoing responsibility.
 
-### Orchestration
-An **Eventarc-triggered Cloud Run Job Launcher** catches the `OBJECT_FINALIZE` event when the upload completes. It stream-validates every line, updates job state in Firestore, and creates a dedicated Kubernetes Job. It exits as soon as the pod is scheduled.
+Per-client concurrency is enforced here: if a pod is already running for a client, the new job is queued as `PENDING`. The previous pod promotes it on completion.
 
-### Execution
-A **GKE Execution Pod** runs for the lifetime of a single job. It runs four concurrent async loops:
+### Execution — GKE Pod
 
-```
-Dispatch Loop        — spaces requests by learned effective RPM
-Response Handler     — processes LLM responses as they return, out of order
-Result Buffer        — accumulates responses and flushes to GCS in batches
-Checkpoint Writer    — persists offset + rate state every 30 seconds
-```
+One pod per job. It runs four concurrent async loops for its entire lifetime:
 
-The pod calls the LLM provider directly over HTTPS. No intermediate queue, no worker fleet. The async loop is the scheduler.
+- **Dispatch loop** — spaces prompt requests by the learned effective RPM
+- **Response handler** — processes LLM responses as they arrive, out of order
+- **Result buffer** — accumulates responses and flushes to GCS in batches (500 responses, 50 MB, or 30s — whichever comes first)
+- **Checkpoint writer** — writes `state.json` to GCS every 30 seconds
 
-### End-to-end flow
-
-```
-POST /v1/jobs/init
-        ↓
-Cloud Run API  →  Firestore (job record)  →  returns signed GCS URL
-        ↓
-Client uploads prompts.jsonl to GCS
-        ↓
-GCS OBJECT_FINALIZE  →  Eventarc  →  Cloud Run Job Launcher
-        ↓
-Job Launcher validates file, creates GKE Job, exits
-        ↓
-Execution Pod: streams prompts → dispatches to LLM → buffers results → checkpoints state
-        ↓
-Results written to GCS in JSONL part files
-        ↓
-GET /v1/jobs/{job_id}/results  →  signed download URLs
-```
-
-The system is fully event-driven. Nothing polls.
-
----
-
-## API Reference
-
-**Base URL:** `https://api.promptforge.io/v1`
-**Auth:** `X-API-Key: {api_key}` on every request. The raw key is never stored — only its SHA-256 hash.
-
-### Submit a job
-
-```http
-POST /v1/jobs/init
-```
-
-```json
-{
-  "provider": "openai | gemini | anthropic",
-  "model": "gpt-4o",
-  "rpm": 500,
-  "tpm": 100000,
-  "max_retries": 3,
-  "api_key": "sk-..."
-}
-```
-
-**Response `202 Accepted`:**
-
-```json
-{
-  "job_id": "uuid",
-  "upload_url": "https://signed-gcs-url",
-  "expires_at": "ISO8601"
-}
-```
-
-Upload your JSONL file directly to `upload_url` using `HTTP PUT`.
-
----
-
-### Check job status
-
-```http
-GET /v1/jobs/{job_id}
-```
-
-```json
-{
-  "job_id": "uuid",
-  "status": "queued | running | completed | failed | cancelled",
-  "total": 1000,
-  "completed": 530,
-  "failed": 20,
-  "pending": 450,
-  "progress_pct": 55.0,
-  "created_at": "ISO8601",
-  "estimated_completion": "ISO8601"
-}
-```
-
----
-
-### Get results
-
-```http
-GET /v1/jobs/{job_id}/results
-```
-
-Available once `status = completed`.
-
-```json
-{
-  "job_id": "uuid",
-  "result_urls": ["https://signed-gcs-url", "..."],
-  "error_urls":  ["https://signed-gcs-url"],
-  "expires_at":  "ISO8601"
-}
-```
-
-Each URL points to a JSONL part file. Merge all parts to reconstruct the full result set.
-
----
-
-### Cancel a job
-
-```http
-DELETE /v1/jobs/{job_id}
-```
-
-Pending prompts are abandoned. In-flight prompts complete naturally.
-
----
-
-## Prompt File Format
-
-Upload a newline-delimited JSON file (`prompts.jsonl`):
-
-```jsonl
-{"prompt_id": 1, "prompt": "Summarise this document: ..."}
-{"prompt_id": 2, "prompt": "Translate to French: ..."}
-{"prompt_id": 3, "prompt": "Extract key entities from: ..."}
-```
-
-`prompt_id` must be a unique integer. It is used for deduplication, retry tracking, and reconciliation. Invalid lines are written to `errors.jsonl` — the job is never aborted due to malformed input.
-
----
-
-## Result File Format
-
-**`results_part_NNN.jsonl`** — one record per successful prompt:
-
-```json
-{
-  "prompt_id": 1,
-  "response": "...",
-  "prompt_tokens": 200,
-  "completion_tokens": 600,
-  "total_tokens": 800
-}
-```
-
-**`errors.jsonl`** — one record per permanently failed prompt:
-
-```json
-{
-  "prompt_id": 47,
-  "prompt": "...",
-  "attempts": 3,
-  "last_error_code": 429,
-  "last_error_message": "Rate limit exceeded",
-  "failed_at": "ISO8601"
-}
-```
+The pod talks to the LLM provider directly over HTTPS via [LiteLLM](https://github.com/BerriAI/litellm). No intermediate queue, no worker fleet — the async event loop is the scheduler.
 
 ---
 
 ## Rate Learning
 
-PromptForge does not trust the RPM/TPM values you provide as exact limits. It treats them as upper bounds and discovers real provider limits through two phases:
+PromptForge never trusts static RPM/TPM values. It treats them as upper bounds and discovers real limits at runtime using a TCP-inspired algorithm.
 
-**Slow Start** — Before any 429, the dispatcher multiplies its RPM target by 1.5 every 30 seconds:
+**Slow start** — before seeing any 429, the dispatcher multiplies its RPM target by 1.5 every 30 seconds. Starting from 10 RPM: `10 → 15 → 22 → 33 → 49 → 73 → ...`
 
-```
-10 → 15 → 22 → 33 → 49 → 73 → 110 → 165 → ...
-```
+**Congestion avoidance** — after a 429, it backs off to 75% of the current target, waits 60 seconds, then increments by +1 every 30 seconds until it hits a ceiling again.
 
-**Congestion Avoidance** — After the first 429, it backs off (`rpm_target × 0.75`), waits 60 seconds, then increments by 1 per 30 seconds:
+**TPM constraint** — effective RPM is also bounded by token budget: `effective_rpm = min(rpm_target, tpm_limit / p95_output_tokens)`. The P95 token estimate updates after every successful response. As responses grow longer, throughput drops automatically.
 
-```
-375 → 376 → 377 → 378 → ...
-```
+This means a job submitted with `rpm: 500` won't saturate at 500 if the provider's real limit is lower. It will converge to whatever the provider actually allows.
 
-This mirrors TCP congestion control. The system finds the provider's real ceiling without prior knowledge and without manual configuration.
+---
 
-**Effective RPM** accounts for both request rate and token budget:
+## Reliability
 
-```
-effective_rpm = min(rpm_target, tpm_limit / p95_output_tokens)
-```
+**Crash recovery** — on pod restart, the execution service reads `state.json` from GCS and resumes from the last checkpoint offset. At-least-once delivery: prompts near the checkpoint boundary may be re-dispatched, but none are silently dropped.
 
-`p95_output_tokens` is a rolling P95 estimate updated after every successful response. If responses grow longer, throughput automatically decreases to respect the TPM ceiling.
+**Reconciliation** — job completion includes a bitset pass across all result and error files. Every `prompt_id` is accounted for. If any ID is missing, it is logged explicitly — there is no silent data loss.
+
+**Duplicate Eventarc events** — the Launcher checks the current Firestore job status before acting. Duplicate `OBJECT_FINALIZE` events (common in GCS) are safely idempotent.
 
 ---
 
 ## Observability
 
-PromptForge uses **OpenTelemetry** across all components. The export target is configurable — point it at GCP native (Cloud Trace / Logging / Monitoring) or a self-hosted Grafana stack (Tempo / Loki / Mimir) without changing any application code.
+All three services are instrumented with **OpenTelemetry**, exporting to Axiom over OTLP. Errors are captured to Sentry.
 
-Every prompt dispatch produces a child span:
+Every prompt dispatch produces a child span carrying token counts, latency, attempt number, and error code. Key rate learning gauges are emitted in real time:
 
-```
-Trace: job_123
-  ├── span: job.init
-  ├── span: job.launch       (file validated, pod created)
-  ├── span: job.execute
-  │     ├── span: prompt.dispatch  [prompt_id=1, attempt=1]
-  │     │     attrs: latency_ms, prompt_tokens, completion_tokens, status
-  │     ├── span: prompt.dispatch  [prompt_id=47, attempt=2, error_code=429]
-  │     ├── span: buffer.flush     [batch=001, response_count=500]
-  │     └── span: checkpoint.write [offset=125000, rpm_target=375]
-  └── span: job.complete
-```
+| Metric | What it tells you |
+|---|---|
+| `rate.rpm_target` | Current learned RPM target |
+| `rate.effective_rpm` | RPM after TPM constraint |
+| `rate.p95_tokens` | Rolling P95 completion token estimate |
+| `rate.429_events` | Rate limit events since job start |
+| `prompts.completed` | Successfully processed |
+| `prompts.failed` | Permanently failed after max retries |
+| `llm.latency_ms` | Per-request provider latency histogram |
+| `queue.retry_depth` | Prompts currently awaiting retry |
 
-Key metrics emitted in real time:
-
-| Metric | Type | Description |
-|---|---|---|
-| `promptforge.rate.rpm_target` | Gauge | Current learned RPM target |
-| `promptforge.rate.effective_rpm` | Gauge | RPM after TPM constraint |
-| `promptforge.rate.p95_tokens` | Gauge | Rolling P95 token estimate |
-| `promptforge.rate.429_events` | Counter | Rate limit events |
-| `promptforge.prompts.completed` | Counter | Successfully processed |
-| `promptforge.prompts.failed` | Counter | Permanently failed |
-| `promptforge.llm.latency_ms` | Histogram | Provider call duration |
-| `promptforge.queue.retry_depth` | Gauge | Prompts awaiting retry |
+`prompt_id` is never used as a metric label — cardinality is kept flat regardless of job size.
 
 ---
 
-## Technology Stack
+## API
+
+Authentication uses `X-API-Key` on every request. Keys are stored in GCP Secret Manager and cached in-process with a 5-minute TTL.
+
+| Endpoint | Description |
+|---|---|
+| `POST /v1/jobs/init` | Create a job. Returns `job_id` and a signed GCS upload URL. |
+| `GET /v1/jobs/{job_id}` | Poll status and progress counts. |
+| `GET /v1/jobs/{job_id}/results` | Returns signed download URLs for result JSONL files. Available once `COMPLETED`. |
+| `DELETE /v1/jobs/{job_id}` | Cancel. In-flight prompts complete naturally; pending ones are abandoned. |
+
+**Input format:** newline-delimited JSON, one `{"prompt_id": int, "prompt": string}` per line. `prompt_id` must be unique within the job — it is used for deduplication, retry tracking, and reconciliation.
+
+**Output format:** `results_final.jsonl` (or `results_part_NNN.jsonl` for large jobs) — one record per prompt carrying `response`, `tokens`, `latency_ms`, and `attempt`. Permanently failed prompts go to `errors.jsonl` with error codes and attempt history.
+
+---
+
+## Stack
 
 | Layer | Technology |
 |---|---|
-| API | Cloud Run (Python) |
-| Job Launcher | Cloud Run (Python, ephemeral) |
-| Execution Engine | GKE — one pod per job |
-| Event routing | Eventarc (GCS → Cloud Run) |
+| API service | Python / FastAPI on Cloud Run |
+| Job launcher | Python / FastAPI on Cloud Run (ephemeral) |
+| Execution engine | Python / asyncio on GKE (one pod per job) |
+| LLM routing | LiteLLM |
+| Event routing | GCP Eventarc (`OBJECT_FINALIZE`) |
 | Job state | Firestore |
 | Object storage | Google Cloud Storage |
 | Secrets | GCP Secret Manager |
-| Observability | OpenTelemetry → Grafana (Tempo / Loki / Mimir) or GCP native |
-| LLM providers | OpenAI, Anthropic, Gemini |
+| Observability | OpenTelemetry → Axiom + Sentry |
+| Infrastructure | Pulumi (TypeScript) |
+| Supported providers | OpenAI, Gemini |
 
 ---
 
 ## Design Principles
 
-**Event-driven end to end.** No component polls. Every state transition is triggered by an event — HTTP response, GCS object finalize, async task completion.
+**Event-driven end to end.** No component polls. Every state transition is triggered by an event: HTTP response, GCS object finalize, async task completion.
 
-**One pod, one job.** Each job runs in a fully isolated GKE pod. Failures are contained. Accounting is exact.
+**One pod, one job.** Each job runs in a fully isolated GKE pod. A failure or rate event in one job cannot affect another. Accounting is exact.
 
-**Memory-constant.** Prompt files are never loaded in full. One line at a time, regardless of file size.
+**Memory-constant.** Prompt files are never loaded in full. The execution pod reads one line at a time via GCS byte-range streaming. A 10M-prompt job uses the same memory as a 100-prompt job.
 
-**At-least-once over at-most-once.** On recovery, prompts near the checkpoint boundary may be re-sent. This is a deliberate trade-off — duplicate work is preferable to silent data loss.
+**At-least-once over at-most-once.** On recovery, prompts near the checkpoint boundary may be re-sent. This is deliberate — duplicate work is preferable to silent data loss.
 
-**No per-response writes.** Results accumulate in a buffer and flush in batches. 1M prompts produce ~2,000 GCS writes.
+**No per-response writes.** Results buffer and flush in batches. One million prompts produce roughly 2,000 GCS writes, not one million.
 
-**Reconciliation as a first-class operation.** Job completion includes a bitset pass that verifies every `prompt_id` was accounted for. Lost prompts are surfaced explicitly, not silently ignored.
+**Reconciliation as a completion step.** Job completion is not just a status flip. A full bitset pass verifies every `prompt_id` was accounted for before the job is marked `COMPLETED`.
 
 ---
 
-## Project Structure
+## Repository Layout
 
 ```
-.
-├── docs/
-│   ├── spec.md                          # API and data specification
-│   ├── high-level-architecture.md       # Plain-language system overview
-│   ├── architecture/
-│   │   ├── complete-architecture.md     # Full phase-by-phase design
-│   │   └── diagrams/
-│   │       └── Architecture.png         # System architecture diagram
-│   └── decisions/                       # Architecture decision records
-│       ├── task-granularity-for-llm-processing.md
-│       ├── cost-optimisations.md
-│       └── rpm-tpm-learning.md
+infra/              Pulumi TypeScript — all GCP resources
+services/
+  api/              Cloud Run API (FastAPI)
+  launcher/         Cloud Run Job Launcher (FastAPI + CloudEvents)
+  execution/        GKE Execution Pod (asyncio)
+    loops/          dispatch, response handler, buffer, checkpoint
+    rate/           rate learning controller
+shared/             Models, Firestore helpers, GCS helpers, observability bootstrap
+tests/
+  unit/             Isolated unit tests per service
+  integration/      Tests against real GCP resources
+  e2e/              Full end-to-end flow against live deployment
+scripts/
+  debug/            GKE log inspection, stale job repair
+  deploy/           Image build and push helpers
+docs/               Architecture, API spec, design decisions
 ```
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Please open an issue before submitting a pull request for anything beyond a small fix — it helps align on direction before work begins.
+Open an issue before submitting a PR for anything beyond a small fix — it helps align on direction before work begins.
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/your-feature`)
+2. Create a feature branch
 3. Commit with clear messages
 4. Open a pull request against `main`
 
@@ -357,7 +189,7 @@ Contributions are welcome. Please open an issue before submitting a pull request
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE) for details.
 
 ---
 

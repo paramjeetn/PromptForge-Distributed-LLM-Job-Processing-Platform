@@ -41,7 +41,7 @@ The execution pod receives via env vars:
 }
 ```
 
-Provider `api_key` is read from Firestore `/jobs/{job_id}` at startup — not from env vars.
+Provider `api_key` is fetched from Secret Manager at startup using `API_KEY_REF` (passed as an env var). The key is held in memory only and never logged.
 
 Execution pod initializes:
 

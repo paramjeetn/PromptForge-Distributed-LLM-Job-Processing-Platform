@@ -26,7 +26,7 @@
 
 PromptForge is a distributed LLM batch job processing platform.
 
-A user submits a file of prompts. The system processes every prompt against a target LLM provider (OpenAI, Anthropic, etc.), respects provider rate limits, and stores results.
+A user submits a file of prompts. The system processes every prompt against a target LLM provider (OpenAI or Gemini), respects provider rate limits, and stores results.
 
 The system is fully event-driven. There is no polling anywhere in the pipeline.
 
@@ -68,21 +68,25 @@ GCS + Firestore
 ## 3. Data Ownership
 
 ```
+Secret Manager
+  ├── Client API keys (`promptforge-api-keys` — JSON dict mapping api_key → client_id)
+  └── Provider LLM API keys (one secret per provider: openai-api-key, gemini-api-key)
+
 Firestore
-  ├── Job metadata (provider, model, rate limits, api_key, api_key_hash)
+  ├── Job metadata (provider, model, rate limits, api_key_ref)
   ├── Job lifecycle status (AWAITING_UPLOAD → QUEUED → PENDING → PROCESSING → COMPLETED / FAILED)
   └── Timestamps (created_at, uploaded_at, queued_at, started_processing_at, completed_at)
 
-GCS — Input Bucket (gs://promptforge-input)
-  └── {api_key_hash}/{job_id}/prompts.jsonl   (uploaded by user via signed URL)
+GCS — Input Bucket (gs://promptforge-input-promptforge-1212)
+  └── {client_id}/{job_id}/prompts.jsonl   (uploaded by user via signed URL)
       Eventarc watches this bucket only.
       Deleted by Execution Pod on job completion.
 
-GCS — Output Bucket (gs://promptforge-output)
-  ├── {api_key_hash}/{job_id}/results_part_NNN.jsonl
-  ├── {api_key_hash}/{job_id}/results_final.jsonl
-  ├── {api_key_hash}/{job_id}/errors.jsonl
-  └── {api_key_hash}/{job_id}/state.json
+GCS — Output Bucket (gs://promptforge-output-promptforge-1212)
+  ├── {client_id}/{job_id}/results_part_NNN.jsonl
+  ├── {client_id}/{job_id}/results_final.jsonl
+  ├── {client_id}/{job_id}/errors.jsonl
+  └── {client_id}/{job_id}/state.json
       No Eventarc on this bucket.
 
 GKE Execution Pod (in-memory only)
@@ -108,39 +112,42 @@ No database polling occurs anywhere.
 ```json
 {
   "provider": "openai",
-  "model": "gpt-4o",
+  "model": "gpt-4o-mini",
   "rpm": 500,
-  "tpm": 100000,
-  "max_retries": 3,
-  "api_key": "sk-..."
+  "tpm": 200000,
+  "max_retries": 3
 }
 ```
 
+`rpm` and `tpm` are optional — defaults are filled from Tier 1 limits for the requested model.
+
 **Cloud Run API actions:**
 
-1. Hash api_key → `api_key_hash = SHA256(api_key)`
-2. Generate unique `job_id`
-3. Create Firestore record at `/jobs/{job_id}`
-4. Generate signed GCS upload URL for `gs://promptforge-input/{api_key_hash}/{job_id}/prompts.jsonl`
-5. Return `job_id` + signed URL to user
+1. Verify `X-API-Key` header against `promptforge-api-keys` Secret Manager secret → resolve `client_id`
+2. Validate `(provider, model)` against supported model registry
+3. Generate unique `job_id`
+4. Resolve `api_key_ref` (Secret Manager path for the provider's LLM key)
+5. Create Firestore record at `/jobs/{job_id}`
+6. Generate signed GCS upload URL for `gs://promptforge-input/{client_id}/{job_id}/prompts.jsonl`
+7. Return `job_id` + signed URL to user
 
 **Firestore record created:**
 
 ```json
 {
   "job_id": "job_123",
+  "client_id": "e2e-test-client",
   "status": "AWAITING_UPLOAD",
 
   "provider": "openai",
-  "model": "gpt-4o",
-  "api_key": "sk-...",
-  "api_key_hash": "sha256:abc123...",
+  "model": "gpt-4o-mini",
+  "api_key_ref": "projects/promptforge-1212/secrets/openai-api-key/versions/latest",
 
   "rpm": 500,
-  "tpm": 100000,
+  "tpm": 200000,
   "max_retries": 3,
 
-  "upload_path": "{api_key_hash}/job_123/prompts.jsonl",
+  "upload_path": "e2e-test-client/job_123/prompts.jsonl",
 
   "prompt_count": null,
   "invalid_count": null,
@@ -842,8 +849,8 @@ Results are buffered and flushed in batches. 1 million prompts produce ~2000 GCS
 **At-least-once over at-most-once.**
 On recovery, prompts near the checkpoint boundary may be reprocessed. This is preferred over silently dropping prompts.
 
-**API key management via Unkey.**
-Client API keys are issued and validated through Unkey — not stored or hashed manually. Unkey handles generation, hashing, revocation, and per-key rate limiting. The `client_id` comes from Unkey key metadata and is used as the GCS path namespace and Firestore job owner. The provider LLM api_key (submitted per job) is stored in the Firestore job record only — never logged or exported.
+**API key management via Secret Manager.**
+Client API keys are stored in GCP Secret Manager (`promptforge-api-keys` secret) as a JSON dict mapping `api_key → client_id`. The API service loads this dict with a 5-minute in-process cache. `client_id` is used as the GCS path namespace and Firestore job owner. Provider LLM keys (OpenAI, Gemini) are stored as separate secrets and fetched by the execution pod at startup using `api_key_ref` — never stored in Firestore, never logged.
 
 **Sequential job execution per client.**
 Jobs from the same api_key_hash run one at a time. The Job Launcher checks for active jobs before creating a pod. The Execution Pod triggers the next queued job on completion.
@@ -1018,7 +1025,6 @@ The OTel SDK is configured once. The export destination is an environment variab
 | Tool | Role | Notes |
 |---|---|---|
 | **Axiom** | Logs + Traces + Metrics | OTel-native SaaS. One env var to connect. Free tier covers early stage. No infrastructure to run. |
-| **Sentry** | Error tracking | Captures unhandled exceptions across all services with full stack traces. 3 lines to integrate. |
-| **Better Stack** | Uptime + alerting | External endpoint monitoring. Pages on downtime. Public status page for users. |
+| **Sentry** | Error tracking | Captures unhandled exceptions across all services with full stack traces. |
 
 Switching Axiom to any other OTel-compatible backend requires only changing `OTEL_EXPORTER_OTLP_ENDPOINT`. No application code changes.

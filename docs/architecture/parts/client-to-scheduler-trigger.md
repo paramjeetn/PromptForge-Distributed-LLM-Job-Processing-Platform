@@ -11,15 +11,17 @@ User
  ▼
 Cloud Run API
  │
- ├── Verify API key via Unkey
- │     valid  → resolve client_id from Unkey metadata
+ ├── Verify API key via Secret Manager
+ │     Loads JSON dict from `promptforge-api-keys` secret (5-min cache)
+ │     valid  → resolve client_id from dict value
  │     invalid → 401, stop
  │
  ├── Generate job_id
  │
  ├── Store provider / model / rate limits
+ │   (RPM/TPM defaults filled from Tier 1 limits if not provided)
  │
- ├── Store api_key (provider LLM key, in Firestore only)
+ ├── Store api_key_ref (Secret Manager path for provider LLM key)
  │
  ├── Store upload_path
  │
@@ -32,20 +34,21 @@ Firestore
 
 {
   job_id,
-  client_id,            ← from Unkey key metadata
+  client_id,            ← resolved from Secret Manager key lookup
+
   status: "AWAITING_UPLOAD",
 
   provider,
   model,
 
-  api_key,              ← provider LLM key, stored here only, never logged
+  api_key_ref,          ← Secret Manager path, not the key itself
 
   rpm,
   tpm,
 
   max_retries,
 
-  upload_path,
+  upload_path,          ← {client_id}/{job_id}/prompts.jsonl
 
   prompt_count: null,
   invalid_count: null,
@@ -106,7 +109,7 @@ Reads from event:
   file_size_bytes
 
 Reads from Firestore:
-  provider, model, api_key, rpm, tpm, max_retries
+  provider, model, api_key_ref, rpm, tpm, max_retries
 
 Stream-validates prompts.jsonl line by line (never loaded in full):
   valid line   → prompt_count++
@@ -138,14 +141,15 @@ Creates GKE Job with env vars:
   JOB_ID        = job_123
   CLIENT_ID     = {client_id}
   PROVIDER      = openai
-  MODEL         = gpt-4o
+  MODEL         = gpt-4o-mini
   RPM_LIMIT     = 500
-  TPM_LIMIT     = 100000
+  TPM_LIMIT     = 200000
   MAX_RETRIES   = 3
+  API_KEY_REF   = projects/promptforge-1212/secrets/openai-api-key/versions/latest
   PROMPTS_PATH  = {client_id}/job_123/prompts.jsonl
   PROMPT_COUNT  = 94500
-  INPUT_BUCKET  = promptforge-input
-  OUTPUT_BUCKET = promptforge-output
+  INPUT_BUCKET  = promptforge-input-promptforge-1212
+  OUTPUT_BUCKET = promptforge-output-promptforge-1212
 
 Job Launcher exits.
 
@@ -158,8 +162,8 @@ GKE Execution Pod starts
  │
  ├── Read all env vars
  │
- ├── Read api_key from Firestore /jobs/{job_id}
- │     (stored at job init, never in Secret Manager)
+ ├── Fetch provider api_key from Secret Manager using API_KEY_REF
+ │     (key held in memory only, never logged)
  │
  ├── Initialize in-memory execution state
  │     offset, completed, failed, running
@@ -184,22 +188,23 @@ GKE Execution Pod starts
 │                         DATA OWNERSHIP                               │
 └──────────────────────────────────────────────────────────────────────┘
 
-Unkey
- └── Client API key identity (client_id resolution, revocation)
+Secret Manager
+ ├── Client API keys (`promptforge-api-keys` secret — JSON dict api_key → client_id)
+ └── Provider LLM API keys (one secret per provider: openai-api-key, gemini-api-key)
 
 Firestore
  ├── Job metadata
  ├── Job status
  ├── Timestamps
  ├── Rate limits
- ├── Provider api_key (stored per job, never exported to OTel)
- └── client_id (from Unkey)
+ ├── api_key_ref (Secret Manager path, not the key itself)
+ └── client_id
 
-GCS — Input Bucket (promptforge-input)
+GCS — Input Bucket (promptforge-input-promptforge-1212)
  └── {client_id}/{job_id}/prompts.jsonl
        Deleted by execution pod on job completion
 
-GCS — Output Bucket (promptforge-output)
+GCS — Output Bucket (promptforge-output-promptforge-1212)
  ├── {client_id}/{job_id}/results_part_NNN.jsonl
  ├── {client_id}/{job_id}/results_final.jsonl
  ├── {client_id}/{job_id}/errors.jsonl
@@ -211,6 +216,5 @@ GKE Execution Pod (in-memory only)
 No bucket polling.
 No prompt storage in Firestore.
 No periodic database polling.
-No Secret Manager — provider api_key read from Firestore at pod startup.
 Fully event-driven from upload to pod creation.
 ```

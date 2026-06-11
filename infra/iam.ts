@@ -39,10 +39,17 @@ new gcp.projects.IAMMember("api-firestore", {
     member: pulumi.interpolate`serviceAccount:${apiSa.email}`,
 });
 
-// Sign GCS upload URLs (signBlob permission on itself)
+// Sign GCS upload/download URLs (signBlob permission on itself)
 new gcp.serviceaccount.IAMMember("api-token-creator", {
     serviceAccountId: apiSa.name,
     role: "roles/iam.serviceAccountTokenCreator",
+    member: pulumi.interpolate`serviceAccount:${apiSa.email}`,
+});
+
+// GCS output bucket: list result files + generate signed download URLs
+new gcp.projects.IAMMember("api-gcs-read", {
+    project: project,
+    role: "roles/storage.objectViewer",
     member: pulumi.interpolate`serviceAccount:${apiSa.email}`,
 });
 

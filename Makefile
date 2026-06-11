@@ -55,12 +55,9 @@ build:
 # Requires: docker, gcloud auth configure-docker (done automatically below).
 build-push:
 	gcloud auth configure-docker $(GCP_REGION)-docker.pkg.dev --quiet
-	docker build -t $(REGISTRY)/api:latest       -f services/api/Dockerfile .
-	docker build -t $(REGISTRY)/launcher:latest  -f services/launcher/Dockerfile .
-	docker build -t $(REGISTRY)/execution:latest -f services/execution/Dockerfile .
-	docker push $(REGISTRY)/api:latest
-	docker push $(REGISTRY)/launcher:latest
-	docker push $(REGISTRY)/execution:latest
+	docker buildx build --platform linux/amd64 --push -t $(REGISTRY)/api:latest       -f services/api/Dockerfile .
+	docker buildx build --platform linux/amd64 --push -t $(REGISTRY)/launcher:latest  -f services/launcher/Dockerfile .
+	docker buildx build --platform linux/amd64 --push -t $(REGISTRY)/execution:latest -f services/execution/Dockerfile .
 
 # ─── Deploy ───────────────────────────────────────────────────────────────────
 

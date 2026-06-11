@@ -2,3 +2,15 @@ encryptionsalt: v1:I8tYeibSTCU=:v1:5ilGD36+cT6LbYK5:oKZjAeY0T51CsOR0DOCp1ZUjX+K3
 config:
   gcp:project: promptforge-1212
   gcp:region: us-central1
+  promptforge:unkeyApiId:
+    secure: v1:+wz+MIgjacyyUDko:QXaErQV8qZk9gE25mD5ZwLlur/3OVLrIN5b9vsD4jtk=
+  promptforge:unkeyRootKey:
+    secure: v1:7ZLsgd0hGk3yXi5O:6F5CaN1k4N2AA8dUTFOIm9iExeIrPOYO4ZeqXZBCG5qzFCqKSbFwOQlhb/wfzw==
+  promptforge:sentryDsn:
+    secure: v1:3EryBqDRU3dDPSug:x25lsoCT8giOJ0DYjejEaLrAvQxIsOvWDWsG5q/bJBBl7WXkkwr3TaSMp1JXZ8T1+myoloDDY4KwQyVBE8A9h2tpBGFm5h8Lx8dyMZAyE27FAKv1OYg9Z/QHCTplheSIJpEDJ+vg08GFLntydRS1
+  promptforge:axiomApiKey:
+    secure: v1:a/qhxyJPq7Bul1Is:WJKvB+7VQY+YI+lSVMvTfHtgP9e5lCs4PGidrwZvVxTeBxHW0yzjn7csWRveaVhwblQtGNbF3NFJ
+  promptforge:openaiApiKey:
+    secure: v1:9TNANasdNkPPGevY:m8a3N2OWdnhI+7alpmXXifu+pHhCcU4LkPMnk0irq5w47Yg1qsQA4Sg/MfcU9kZYUgM70+eRnr4gqCfSNQF9cIvCKEwRcS85mp45WMvA8EgBNtLQiXuR1gxirF0gOPJ/Hg/De4XYlj0kRCI7+fj1
+  promptforge:geminiApiKey:
+    secure: v1:4loij0T1Qu272arL:EWmQxuwVcl8rM6pINLPk4QwRqAN7wHa6opNazedWeFTRw+Ysrs5K/5SF2DxU/8aPG2Z1+r0fSQ==

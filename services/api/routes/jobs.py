@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,7 +15,19 @@ from shared.models.job import JobRecord, JobStatus
 
 router = APIRouter()
 
-SUPPORTED_PROVIDERS = {"openai", "anthropic", "gemini", "mistral"}
+# Supported models with their Tier 1 RPM/TPM limits.
+# (provider, model) → (rpm, tpm)
+# RPM/TPM are used as ceilings when the client doesn't specify them.
+# The rate controller starts at 10 RPM and slow-starts up to these ceilings.
+SUPPORTED_MODELS: dict[tuple[str, str], tuple[int, int]] = {
+    # OpenAI
+    ("openai",  "gpt-4o-mini"):       (500,  200_000),
+    ("openai",  "gpt-4o"):            (500,   30_000),
+    # Gemini
+    ("gemini",  "gemini-2.0-flash"):  ( 15, 1_000_000),
+    ("gemini",  "gemini-1.5-flash"):  ( 15, 1_000_000),
+    ("gemini",  "gemini-1.5-pro"):    (  2,   32_000),
+}
 
 
 class JobInitRequest(BaseModel):
@@ -37,10 +49,12 @@ async def job_init(
     body: JobInitRequest,
     client_id: Annotated[str, Depends(verify_api_key)],
 ):
-    if body.provider not in SUPPORTED_PROVIDERS:
+    if (body.provider, body.model) not in SUPPORTED_MODELS:
+        supported = sorted(f"{p}/{m}" for p, m in SUPPORTED_MODELS)
         raise HTTPException(
             status_code=422,
-            detail=f"Unsupported provider '{body.provider}'. Choose from: {sorted(SUPPORTED_PROVIDERS)}",
+            detail=f"Unsupported provider/model '{body.provider}/{body.model}'. "
+                   f"Supported: {supported}",
         )
 
     job_id = str(uuid.uuid4())
@@ -63,6 +77,11 @@ async def job_init(
         if gcp_project else None
     )
 
+    # Fill in Tier 1 defaults if the client didn't specify limits
+    default_rpm, default_tpm = SUPPORTED_MODELS[(body.provider, body.model)]
+    rpm = body.rpm if body.rpm is not None else default_rpm
+    tpm = body.tpm if body.tpm is not None else default_tpm
+
     job = JobRecord(
         job_id=job_id,
         client_id=client_id,
@@ -70,8 +89,8 @@ async def job_init(
         model=body.model,
         status=JobStatus.AWAITING_UPLOAD,
         max_retries=body.max_retries,
-        rpm=body.rpm,
-        tpm=body.tpm,
+        rpm=rpm,
+        tpm=tpm,
         api_key_ref=api_key_ref,
         upload_path=upload_path,
         created_at=datetime.now(timezone.utc),

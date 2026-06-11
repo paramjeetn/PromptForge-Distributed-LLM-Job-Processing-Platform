@@ -34,6 +34,7 @@ def _init_sentry(service_name: str) -> None:
         environment=os.getenv("ENV", "production"),
         release=service_name,
         send_default_pii=False,
+        shutdown_timeout=2,
     )
 
 

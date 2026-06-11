@@ -27,7 +27,7 @@ from shared.models.job import JobStatus
 from shared.secrets import fetch_api_key
 from services.execution.config import from_env
 from services.execution.loops.dispatch import run
-from services.execution.queue import maybe_start_next_job
+from services.execution.job_queue import maybe_start_next_job
 
 
 async def _main() -> None:

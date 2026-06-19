@@ -1,0 +1,59 @@
+---
+title: Overview
+description: Base URL, authentication, and error format for the PromptForge API.
+---
+
+## Base URL
+
+```
+https://api.promptforge.dev
+```
+
+All endpoints are versioned under `/v1`.
+
+---
+
+## Authentication
+
+Every request (except `/healthz`) requires an API key passed in the `X-API-Key` header.
+
+```bash
+curl https://api.promptforge.dev/v1/jobs/init \
+  -H "X-API-Key: your-api-key"
+```
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-API-Key` | Yes | Your PromptForge API key |
+
+Missing or invalid keys return `401 Unauthorized`.
+
+---
+
+## Error format
+
+All errors return a JSON body with a `detail` field:
+
+```json
+{
+  "detail": "Invalid API key"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Bad request — malformed body or missing required fields |
+| `401` | Unauthorized — missing or invalid API key |
+| `404` | Not found — job does not exist or belongs to a different client |
+| `409` | Conflict — job is not in the expected state (e.g. results requested before completion) |
+| `422` | Unprocessable — unsupported provider or model combination |
+
+---
+
+## Health check
+
+```bash
+GET /healthz
+```
+
+No authentication required. Returns `{"status": "ok"}` when the API is up.

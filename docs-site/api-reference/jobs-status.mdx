@@ -1,0 +1,103 @@
+---
+title: "Get Job Status"
+description: "Poll the current status and progress of a batch job."
+api: "GET /v1/jobs/{job_id}/status"
+---
+
+## Request
+
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-API-Key` | Yes | Your PromptForge API key |
+
+### Path parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `job_id` | string (UUID) | The job ID returned from `POST /v1/jobs/init` |
+
+### Example request
+
+```bash curl
+curl https://api.promptforge.dev/v1/jobs/3f7a1c2e-.../status \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY"
+```
+
+```python Python
+import requests, time
+
+def wait_for_completion(job_id, api_key, poll_interval=5):
+    while True:
+        res = requests.get(
+            f"https://api.promptforge.dev/v1/jobs/{job_id}/status",
+            headers={"X-API-Key": api_key}
+        )
+        data = res.json()
+        print(f"Status: {data['status']} — {data.get('completed_count', 0)}/{data.get('prompt_count', '?')}")
+        if data["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
+            return data
+        time.sleep(poll_interval)
+```
+
+---
+
+## Response
+
+**Status: `200 OK`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | string | Job identifier |
+| `status` | string | Current job status (see table below) |
+| `provider` | string | LLM provider for this job |
+| `model` | string | Model being used |
+| `prompt_count` | integer \| null | Total prompts in the file. `null` until file is parsed. |
+| `completed_count` | integer \| null | Prompts successfully processed |
+| `failed_count` | integer \| null | Prompts that exhausted retries |
+| `created_at` | string (ISO 8601) | When the job was created |
+| `started_processing_at` | string \| null | When processing began |
+| `completed_at` | string \| null | When the job reached a terminal state |
+
+```json
+{
+  "job_id": "3f7a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b",
+  "status": "PROCESSING",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "prompt_count": 500,
+  "completed_count": 213,
+  "failed_count": 2,
+  "created_at": "2024-01-15T10:15:00Z",
+  "started_processing_at": "2024-01-15T10:15:30Z",
+  "completed_at": null
+}
+```
+
+---
+
+## Job status values
+
+| Status | Description |
+|--------|-------------|
+| `AWAITING_UPLOAD` | Job created, waiting for the prompts file to be uploaded |
+| `QUEUED` | File received, waiting for a processing pod to become available |
+| `PENDING` | Another job for this client is active — this one will start when that finishes |
+| `PROCESSING` | Actively dispatching prompts to the LLM provider |
+| `COMPLETED` | All prompts processed. Results are ready to download. |
+| `FAILED` | Job failed due to an unrecoverable error |
+| `CANCELLED` | Job was cancelled |
+
+<Tip>
+  Poll every 5–10 seconds. Once `status` is `COMPLETED`, call `GET /v1/jobs/{job_id}/results` to get your download URLs.
+</Tip>
+
+---
+
+## Errors
+
+| Status | When |
+|--------|------|
+| `401` | Missing or invalid `X-API-Key` |
+| `404` | Job not found, or belongs to a different client |

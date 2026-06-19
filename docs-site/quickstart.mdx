@@ -1,0 +1,165 @@
+---
+title: Quickstart
+description: Run your first batch LLM job in under 5 minutes.
+---
+
+## Prerequisites
+
+- A PromptForge API key (set as `PROMPTFORGE_API_KEY`)
+- `curl` or any HTTP client
+
+---
+
+## Step 1 — Init a job
+
+Call `/v1/jobs/init` with your target provider and model. This creates the job and returns a signed URL to upload your prompts file.
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://api.promptforge.dev/v1/jobs/init \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_retries": 3
+  }'
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "https://api.promptforge.dev/v1/jobs/init",
+    headers={"X-API-Key": "your-api-key"},
+    json={
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "max_retries": 3
+    }
+)
+
+data = response.json()
+job_id = data["job_id"]
+upload_url = data["upload_url"]
+```
+
+</CodeGroup>
+
+**Response:**
+```json
+{
+  "job_id": "3f7a1c2e-...",
+  "upload_url": "https://storage.googleapis.com/promptforge-input/...",
+  "expires_at": "2024-01-15T10:30:00Z"
+}
+```
+
+<Warning>
+  The `upload_url` expires in 15 minutes. Upload your file before it expires.
+</Warning>
+
+---
+
+## Step 2 — Create your prompts file
+
+Each line in the file is one prompt in JSONL format:
+
+```jsonl prompts.jsonl
+{"prompt_id": "p001", "prompt": "Summarize the following in one sentence: The Eiffel Tower was built in 1889."}
+{"prompt_id": "p002", "prompt": "Translate to French: Hello, how are you?"}
+{"prompt_id": "p003", "prompt": "Write a haiku about distributed systems."}
+```
+
+- `prompt_id` — your identifier, returned with results (any string, must be unique per file)
+- `prompt` — the text sent to the LLM
+
+---
+
+## Step 3 — Upload the file
+
+PUT the file directly to the signed URL. Do not add auth headers here — the URL is pre-signed.
+
+```bash curl
+curl -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @prompts.jsonl
+```
+
+A `200 OK` response means the upload succeeded and processing will start automatically within seconds.
+
+---
+
+## Step 4 — Poll for status
+
+```bash curl
+curl https://api.promptforge.dev/v1/jobs/$JOB_ID/status \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY"
+```
+
+**Response while processing:**
+```json
+{
+  "job_id": "3f7a1c2e-...",
+  "status": "PROCESSING",
+  "prompt_count": 3,
+  "completed_count": 1,
+  "failed_count": 0,
+  "created_at": "2024-01-15T10:15:00Z",
+  "started_processing_at": "2024-01-15T10:15:30Z",
+  "completed_at": null
+}
+```
+
+Poll until `status` is `COMPLETED` or `FAILED`. Recommended interval: every 5–10 seconds.
+
+---
+
+## Step 5 — Fetch results
+
+```bash curl
+curl https://api.promptforge.dev/v1/jobs/$JOB_ID/results \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY"
+```
+
+**Response:**
+```json
+{
+  "job_id": "3f7a1c2e-...",
+  "status": "COMPLETED",
+  "files": [
+    {
+      "filename": "results_part_001.jsonl",
+      "url": "https://storage.googleapis.com/promptforge-output/...",
+      "expires_at": "2024-01-15T12:00:00Z"
+    },
+    {
+      "filename": "errors.jsonl",
+      "url": "https://storage.googleapis.com/promptforge-output/...",
+      "expires_at": "2024-01-15T12:00:00Z"
+    }
+  ]
+}
+```
+
+Download each file from its signed URL. Each line in `results_part_NNN.jsonl` looks like:
+
+```jsonl
+{"prompt_id": "p001", "result": "The Eiffel Tower, constructed in 1889, is a famous iron lattice tower in Paris.", "model": "gpt-4o-mini", "tokens_used": 24}
+```
+
+<Note>
+  Signed result URLs expire in **60 minutes**. Download your files promptly after fetching them.
+</Note>
+
+---
+
+## Supported providers and models
+
+| Provider | Example models |
+|----------|---------------|
+| `openai` | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo` |
+| `anthropic` | `claude-3-5-sonnet-20241022`, `claude-3-haiku-20240307` |
+| `gemini` | `gemini-1.5-pro`, `gemini-1.5-flash` |
+| `mistral` | `mistral-large-latest`, `mistral-small-latest` |

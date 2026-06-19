@@ -1,0 +1,56 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "PromptForge",
+  "colors": {
+    "primary": "#6366f1",
+    "light": "#818cf8",
+    "dark": "#4f46e5"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "introduction",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api-reference/overview",
+          "api-reference/jobs-init",
+          "api-reference/jobs-status",
+          "api-reference/jobs-results"
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/paramjeetn/PromptForge-Distributed-LLM-Job-Processing-Platform"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get API Key",
+      "href": "https://github.com/paramjeetn/PromptForge-Distributed-LLM-Job-Processing-Platform"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/paramjeetn/PromptForge-Distributed-LLM-Job-Processing-Platform"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+---
+title: Introduction
+description: Distributed batch processing for LLM prompts — built for scale, crash-safe by design.
+---
+
+## What is PromptForge?
+
+PromptForge is a distributed LLM job processing platform. You upload a JSONL file of prompts, choose a provider and model, and PromptForge handles the rest — rate limiting, retries, checkpointing, and parallel dispatch — returning structured results when complete.
+
+It's designed for workloads where you need to run hundreds or thousands of prompts reliably without babysitting API rate limits or worrying about partial failures mid-run.
+
+## How it works
+
+<Steps>
+  <Step title="Init a job">
+    Call `POST /v1/jobs/init` with your provider and model. You get back a signed GCS upload URL and a `job_id`.
+  </Step>
+  <Step title="Upload your prompts">
+    PUT your `prompts.jsonl` file directly to the signed URL. Each line is one prompt.
+  </Step>
+  <Step title="Processing starts automatically">
+    PromptForge detects the upload, spins up a processing pod, and starts dispatching prompts to the LLM provider. The pod self-regulates rate limits using a slow-start algorithm.
+  </Step>
+  <Step title="Poll for completion">
+    Call `GET /v1/jobs/{job_id}/status` to track progress — completed count, failed count, current status.
+  </Step>
+  <Step title="Fetch results">
+    Once `COMPLETED`, call `GET /v1/jobs/{job_id}/results` to get signed download URLs for your result files.
+  </Step>
+</Steps>
+
+## Key properties
+
+- **Crash-safe** — checkpoints every 30s to GCS. If the pod dies mid-run, it resumes from the last offset.
+- **Adaptive rate limiting** — learns the real RPM/TPM ceiling of your provider key using a slow-start algorithm, not the documented limits.
+- **Multi-provider** — OpenAI, Anthropic, Gemini, Mistral via LiteLLM.
+- **Per-client isolation** — one active processing pod per API key at a time. Second job queues automatically.
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Run your first batch job in under 5 minutes.
+</Card>

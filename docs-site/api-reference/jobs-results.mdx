@@ -1,0 +1,128 @@
+---
+title: "Get Results"
+description: "Fetch signed download URLs for completed job result files."
+api: "GET /v1/jobs/{job_id}/results"
+---
+
+## Request
+
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-API-Key` | Yes | Your PromptForge API key |
+
+### Path parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `job_id` | string (UUID) | The job ID returned from `POST /v1/jobs/init` |
+
+### Example request
+
+```bash curl
+curl https://api.promptforge.dev/v1/jobs/3f7a1c2e-.../results \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY"
+```
+
+```python Python
+import requests
+
+res = requests.get(
+    f"https://api.promptforge.dev/v1/jobs/{job_id}/results",
+    headers={"X-API-Key": "your-api-key"}
+)
+data = res.json()
+
+for file in data["files"]:
+    print(file["filename"], file["url"])
+```
+
+---
+
+## Response
+
+**Status: `200 OK`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | string | Job identifier |
+| `status` | string | Will always be `COMPLETED` on a 200 response |
+| `files` | array | List of result files available for download |
+| `files[].filename` | string | File name (e.g. `results_part_001.jsonl`, `errors.jsonl`) |
+| `files[].url` | string | Pre-signed GCS URL — download the file directly from here |
+| `files[].expires_at` | string (ISO 8601) | When the signed URL expires |
+
+```json
+{
+  "job_id": "3f7a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b",
+  "status": "COMPLETED",
+  "files": [
+    {
+      "filename": "results_part_001.jsonl",
+      "url": "https://storage.googleapis.com/promptforge-output/client-xyz/3f7a1c2e/results_part_001.jsonl?X-Goog-Signature=...",
+      "expires_at": "2024-01-15T12:00:00Z"
+    },
+    {
+      "filename": "errors.jsonl",
+      "url": "https://storage.googleapis.com/promptforge-output/client-xyz/3f7a1c2e/errors.jsonl?X-Goog-Signature=...",
+      "expires_at": "2024-01-15T12:00:00Z"
+    }
+  ]
+}
+```
+
+<Warning>
+  Signed URLs expire **60 minutes** after this response is issued. Download your files within that window.
+</Warning>
+
+---
+
+## Result file format
+
+### results_part_NNN.jsonl
+
+Large jobs are split into multiple result files (each up to a few thousand rows). Each line:
+
+```jsonl
+{"prompt_id": "p001", "result": "The Eiffel Tower...", "model": "gpt-4o-mini", "tokens_used": 24}
+```
+
+| Field | Description |
+|-------|-------------|
+| `prompt_id` | The ID you provided in the input file |
+| `result` | The LLM's response text |
+| `model` | Model that processed this prompt |
+| `tokens_used` | Total tokens consumed for this prompt |
+
+### errors.jsonl
+
+Prompts that failed after exhausting all retries:
+
+```jsonl
+{"prompt_id": "p042", "error": "rate_limit_exceeded", "attempts": 3}
+```
+
+If no prompts failed, `errors.jsonl` will still be present but empty.
+
+---
+
+## Downloading all files
+
+```bash
+# Download all result files
+for url in $(curl -s https://api.promptforge.dev/v1/jobs/$JOB_ID/results \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY" | jq -r '.files[].url'); do
+  curl -O -J "$url"
+done
+```
+
+---
+
+## Errors
+
+| Status | When |
+|--------|------|
+| `401` | Missing or invalid `X-API-Key` |
+| `404` | Job not found, or belongs to a different client |
+| `409` | Job is not yet `COMPLETED` — poll `/status` first |

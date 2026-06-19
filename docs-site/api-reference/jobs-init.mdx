@@ -1,0 +1,97 @@
+---
+title: "Init Job"
+description: "Create a new batch job and get a signed URL to upload your prompts file."
+api: "POST /v1/jobs/init"
+---
+
+## Request
+
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-API-Key` | Yes | Your PromptForge API key |
+| `Content-Type` | Yes | `application/json` |
+
+### Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | LLM provider. One of: `openai`, `anthropic`, `gemini`, `mistral` |
+| `model` | string | Yes | Model name as accepted by the provider (e.g. `gpt-4o-mini`) |
+| `max_retries` | integer | No | Max retries per prompt on transient errors. Default: `3` |
+| `rpm` | integer | No | Override requests-per-minute limit. If omitted, PromptForge learns it automatically. |
+| `tpm` | integer | No | Override tokens-per-minute limit. If omitted, PromptForge learns it automatically. |
+
+<Note>
+  If you omit `rpm` and `tpm`, PromptForge uses a slow-start algorithm to discover your actual provider rate limits dynamically. This is the recommended approach.
+</Note>
+
+### Example request
+
+```bash curl
+curl -X POST https://api.promptforge.dev/v1/jobs/init \
+  -H "X-API-Key: $PROMPTFORGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_retries": 3
+  }'
+```
+
+```python Python
+import requests
+
+res = requests.post(
+    "https://api.promptforge.dev/v1/jobs/init",
+    headers={"X-API-Key": "your-api-key"},
+    json={"provider": "openai", "model": "gpt-4o-mini", "max_retries": 3}
+)
+data = res.json()
+# data["job_id"], data["upload_url"], data["expires_at"]
+```
+
+---
+
+## Response
+
+**Status: `202 Accepted`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | string (UUID) | Unique identifier for this job. Use it for all subsequent calls. |
+| `upload_url` | string | Pre-signed GCS URL. PUT your `prompts.jsonl` here. |
+| `expires_at` | string (ISO 8601) | When the upload URL expires. |
+
+```json
+{
+  "job_id": "3f7a1c2e-4b5d-6e7f-8a9b-0c1d2e3f4a5b",
+  "upload_url": "https://storage.googleapis.com/promptforge-input/client-xyz/3f7a1c2e/prompts.jsonl?X-Goog-Signature=...",
+  "expires_at": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+## Errors
+
+| Status | When |
+|--------|------|
+| `400` | Missing required fields or malformed JSON |
+| `401` | Missing or invalid `X-API-Key` |
+| `422` | Unsupported `provider` or `model` value |
+
+---
+
+## Next step
+
+After a `202` response, upload your `prompts.jsonl` file to the `upload_url` using a PUT request:
+
+```bash
+curl -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @prompts.jsonl
+```
+
+Processing starts automatically once the upload completes.

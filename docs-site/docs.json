@@ -7,7 +7,7 @@
     "light": "#818cf8",
     "dark": "#4f46e5"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "/static/prompt_forge_logo_dark_theme.png",
   "navigation": {
     "groups": [
       {
@@ -29,8 +29,8 @@
     ]
   },
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "/static/prompt_forge_logo_light_theme.png",
+    "dark": "/static/prompt_forge_logo_dark_theme.png"
   },
   "appearance": {
     "default": "dark"
